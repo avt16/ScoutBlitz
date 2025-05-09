@@ -126,7 +126,7 @@ function HomePage() {
               // <GradientButton text='Go to Profile' href='/profile' />
               <button onClick={()=>navigate('/profile')} className="className='inline-block px-6 py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white font-semibold rounded-xl shadow-md hover:scale-105 transition duration-300'">Go to Profile</button>
             ):(
-              <button onClick={()=>navigate('/signup')} className="className='inline-block px-6 py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white font-semibold rounded-xl shadow-md hover:scale-105 transition duration-300'">Sing const [first, setfirst] = useState(second)</button>
+              <button onClick={()=>navigate('/signup')} className="className='inline-block px-6 py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white font-semibold rounded-xl shadow-md hover:scale-105 transition duration-300'">Sign Up</button>
             )}
           </div>
         </section>
