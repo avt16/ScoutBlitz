@@ -122,9 +122,9 @@ function HomePage() {
             <h2 className='text-4xl font-bold mb-6'>Start Building Your Future in Sports</h2>
             <p className='text-lg mb-8'>Thousands of athletes and coaches use ScoutBlitz to connect, get noticed, and take the next step in their journey. Don’t wait—make your move today.</p>
             {user ? (
-              <GradientButton text='Go to Profile' href='/Profile' />
+              <GradientButton text='Go to Profile' href='/profile' />
             ):(
-              <GradientButton text='Sign Up Now' href='/SignUp' />
+              <GradientButton text='Sign Up Now' href='/signup' />
             )}
           </div>
         </section>

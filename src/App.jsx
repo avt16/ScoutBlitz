@@ -13,14 +13,14 @@ function App() {
       <div> 
         <BrowserRouter>
         <Routes>
-          <Route path="/Login" element={<Login />} />
-          <Route path="/SignUp" element={<SignUp />} />
-          <Route path="/ForgotPassword" element={<ForgotPassword />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<SignUp />} />
+          <Route path="/forgotPassword" element={<ForgotPassword />} />
           <Route path='/' element={<HomePage/>}/>
           {/* myProfile */}
-          <Route path='/Profile' element={<Profile isMyProfile={true}/>}/>
+          <Route path='/profile' element={<Profile isMyProfile={true}/>}/>
           {/* general use profile */}
-          <Route path='/Profile/:userId' element={<Profile isMyProfile={false}/>}/>
+          <Route path='/profile/:userId' element={<Profile isMyProfile={false}/>}/>
           <Route path="/chat/:chatPartnerId" element={<Chat />} />
         </Routes>
         </BrowserRouter>

@@ -38,7 +38,7 @@ function ForgotPassword() {
             <button 
               type="button" 
               class="bg-blue-600 text-white w-full p-2 rounded hover:bg-blue-500 transition" 
-              onClick={()=> {sendPasswordReset(email), navigate('/Login')}}
+              onClick={()=> {sendPasswordReset(email), navigate('/login')}}
             >
               Send Password Reset Link
             </button>  

@@ -119,7 +119,7 @@ const logInWithEmailAndPassword = async (email, password) => {
         <div class="text-center mt-4">  
           <span 
             class="text-gray-400 hover:underline cursor-pointer" 
-            onClick={() => navigate('/ForgotPassword')}
+            onClick={() => navigate('/forgotPassword')}
           >Forgot Password?</span>  
         </div>  
       </div>  
