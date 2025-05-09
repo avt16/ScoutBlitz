@@ -1,5 +1,5 @@
 import './App.css'
-import Login from './components/login'
+import Login from './components/Login'
 import SignUp from './components/SignUp'
 import ForgotPassword from './components/ForgotPassword'
 import HomePage from './components/HomePage'
