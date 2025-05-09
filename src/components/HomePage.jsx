@@ -2,7 +2,7 @@ import React from 'react';
 import Header from './Header';
 import { getAuth, onAuthStateChanged} from 'firebase/auth';
 import { useEffect, useState } from 'react';
-
+import { useNavigate } from "react-router-dom";
 
 function GradientButton({ text, href }) {
   return (
@@ -27,6 +27,7 @@ function FeatureCard({ title, description, icon }) {
 
 function HomePage() {
   const [user, setUser] = useState(null);
+  const navigate = useNavigate();
   const scrollToFooter = () => {
     const footer = document.getElementById('page-footer');
     if (footer) {
@@ -122,9 +123,10 @@ function HomePage() {
             <h2 className='text-4xl font-bold mb-6'>Start Building Your Future in Sports</h2>
             <p className='text-lg mb-8'>Thousands of athletes and coaches use ScoutBlitz to connect, get noticed, and take the next step in their journey. Don’t wait—make your move today.</p>
             {user ? (
-              <GradientButton text='Go to Profile' href='/profile' />
+              // <GradientButton text='Go to Profile' href='/profile' />
+              <button onClick={()=>navigate('/profile')} className="className='inline-block px-6 py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white font-semibold rounded-xl shadow-md hover:scale-105 transition duration-300'">Go to Profile</button>
             ):(
-              <GradientButton text='Sign Up Now' href='/signup' />
+              <button onClick={()=>navigate('/signup')} className="className='inline-block px-6 py-3 bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 text-white font-semibold rounded-xl shadow-md hover:scale-105 transition duration-300'">Sing const [first, setfirst] = useState(second)</button>
             )}
           </div>
         </section>
