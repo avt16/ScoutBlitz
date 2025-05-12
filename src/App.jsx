@@ -1,17 +1,19 @@
-import './App.css'
-import Login from './components/Login'
-import SignUp from './components/SignUp'
-import ForgotPassword from './components/ForgotPassword'
-import HomePage from './components/HomePage'
-import Profile from './components/Profile'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import Chat from './components/Chat'
+import './App.css';
+import Login from './components/Login';
+import SignUp from './components/SignUp';
+import ForgotPassword from './components/ForgotPassword';
+import HomePage from './components/HomePage';
+import Profile from './components/Profile';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import Chat from './components/Chat';
+import { Analytics } from "@vercel/analytics/react";
 
 function App() {
 
   return (
       <div> 
         <BrowserRouter>
+        <Analytics/>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<SignUp />} />
