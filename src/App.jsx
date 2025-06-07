@@ -7,6 +7,8 @@ import Profile from './components/Profile';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import Chat from './components/Chat';
 import { Analytics } from "@vercel/analytics/react";
+import Discovery from './components/Discovery';
+import Feed from './components/Feed';
 
 function App() {
 
@@ -15,6 +17,8 @@ function App() {
         <BrowserRouter>
         <Analytics/>
         <Routes>
+          <Route path='/feed' element = {<Feed/>}/>
+          <Route path='/discovery' element = {<Discovery/>}/>
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<SignUp />} />
           <Route path="/forgotPassword" element={<ForgotPassword />} />

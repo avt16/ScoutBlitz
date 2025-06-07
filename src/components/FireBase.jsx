@@ -4,6 +4,7 @@ import {
   signOut,
 } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
+import { getStorage } from "firebase/storage";
 
 const firebaseConfig = {
   apiKey: "AIzaSyB2RmSFGSKqs7nNxeka_fRS8oyWFkcKyw4",
@@ -17,6 +18,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 const logout = () => {
   signOut(auth);
@@ -25,4 +27,5 @@ export {
   auth,
   db,
   logout,
+  storage
 };

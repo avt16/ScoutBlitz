@@ -7,7 +7,9 @@ import { Card } from './ui/card';
 import { setDoc, doc, getDoc } from "firebase/firestore";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button } from './ui/button';
-import { db } from './FireBase';
+import { db, storage } from './FireBase';
+import { ref,uploadBytes, getDownloadURL} from "firebase/storage";
+import { CgSoftwareUpload } from "react-icons/cg";
 
 export default function Profile({ isMyProfile }) {
     const navigate = useNavigate();
@@ -84,8 +86,12 @@ export default function Profile({ isMyProfile }) {
         swimming5kmOpenWaterTime: "",
         swimming75kmOpenWaterTime: "",
         swimming10kmOpenWaterTime: "",
-        swimming25kmOpenWaterTime: ""
+        swimming25kmOpenWaterTime: "",
+        photos: [],
+        videos: []
     });
+
+    const [uploading, setUploading] = useState(false);
 
     useEffect(() => {
         const auth = getAuth();
@@ -177,7 +183,9 @@ export default function Profile({ isMyProfile }) {
                     swimming5kmOpenWaterTime: data.swimming5kmOpenWaterTime || "",
                     swimming75kmOpenWaterTime: data.swimming75kmOpenWaterTime || "",
                     swimming10kmOpenWaterTime: data.swimming10kmOpenWaterTime || "",
-                    swimming25kmOpenWaterTime: data.swimming25kmOpenWaterTime || ""
+                    swimming25kmOpenWaterTime: data.swimming25kmOpenWaterTime || "",
+                    photos: data.photos || [],
+                    videos: data.videos || []
                 });
             } else if (isMyProfile && user) {
                 setFormData(prev => ({
@@ -269,7 +277,9 @@ export default function Profile({ isMyProfile }) {
             swimming75kmOpenWaterTime: formData.swimming75kmOpenWaterTime,
             swimming10kmOpenWaterTime: formData.swimming10kmOpenWaterTime,
             swimming25kmOpenWaterTime: formData.swimming25kmOpenWaterTime,
-            email: user.email // Make sure email is saved too
+            email: user.email, // Make sure email is saved too
+            photos: formData.photos || [],
+            videos: formData.videos || []
         };
 
         await setDoc(docRef, profileData, {merge:true});
@@ -286,6 +296,27 @@ export default function Profile({ isMyProfile }) {
             reader.readAsDataURL(file);
         }
     };
+
+    const handleMediaUpload = async(e,type) => {
+        const files = Array.from(e.target.files);
+        if(!user.uid || files.length === 0) return;
+        setUploading(true);
+        const uploadedItems = [];
+        for (const file of files) {
+            const fileRef = ref(storage,`users/${user.uid}/${type}/${file.name}`)
+            await uploadBytes(fileRef, file);
+            const url = await getDownloadURL(fileRef);
+            uploadedItems.push({
+                url,
+                timestamp: new Date().toISOString(),
+            });
+        }
+        setFormData((prev)=> ({
+            ...prev,
+            [type]: [...(prev[type] || []), ...uploadedItems]
+        }));
+        setUploading(false);
+    }
 
     if (!user) return <p className="text-center mt-10">Please log in to view your profile.</p>;
 
@@ -388,6 +419,72 @@ export default function Profile({ isMyProfile }) {
                                     <option value="Female">Female</option>
                                     <option value="Other">Other</option>
                                 </select>
+                            <div className='mt-4'>
+                                {isMyProfile && editing && (
+                                    <>
+                                        {/* <div className='flex flex-row gap-2 items-center text-center'>
+                                            <label className="block mb-2 font-semibold"> Upload Photos</label>
+                                            <CgSoftwareUpload size={23} />
+                                        </div>
+                                        <input type="file" accept='image/*' multiple onChange={(e)=> handleMediaUpload(e,'photos')} disabled={uploading} style={{ display: 'none' }}/> */}
+                                        <div>
+                                            <label htmlFor="photo-upload" className="flex items-center gap-2 cursor-pointer text-blue-600 hover:underline">
+                                              <CgSoftwareUpload size={24} />
+                                              <span className="font-medium">Upload Photos</span>
+                                            </label>
+                                            <input
+                                              id="photo-upload"
+                                              type="file"
+                                              accept="image/*"
+                                              multiple
+                                              onChange={(e) => handleMediaUpload(e, 'photos')}
+                                              disabled={uploading}
+                                              className="hidden"
+                                            />
+                                        </div>
+
+                                        {/* <label className="block mb-2 font-semibold"> Upload Videos</label>
+                                        <input type="file" accept='video/*' multiple onChange={(e)=> handleMediaUpload(e,'videos')} disabled={uploading} style={{ display: 'none' }}/> */}
+                                        <div>
+                                            <label htmlFor="video-upload" className="flex items-center gap-2 cursor-pointer text-purple-600 hover:underline">
+                                              <CgSoftwareUpload size={24} />
+                                              <span className="font-medium">Upload Videos</span>
+                                            </label>
+                                            <input
+                                              id="video-upload"
+                                              type="file"
+                                              accept="video/*"
+                                              multiple
+                                              onChange={(e) => handleMediaUpload(e, 'videos')}
+                                              disabled={uploading}
+                                              className="hidden"
+                                            />
+                                        </div>
+                                        {uploading && <div className="text-blue-500 mt-2">Uploading...</div>}
+                                    </>
+                                )}
+                                {/* {formData.photos && formData.photos.length > 0 && (
+                                    <div className="mt-4">
+                                        <div className="font-semibold mb-2"> Photos: </div>
+                                        <div>
+                                            {formData.photos.map((url,idx)=> (
+                                                <img key={idx} src={url} alt="uploaded" className="w-24 h-24 object-cover rounded-lg border"/>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                {formData.videos && formData.videos.length > 0 && (
+                                    <div className="mt-4">
+                                        <div className="font-semibold mb-2"> Videos: </div>
+                                        <div>
+                                            {formData.videos.map((url,idx)=> (
+                                                <video key={idx} src={url} controls className="w-24 h-24 object-cover rounded-lg border"/>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )} */}
+                            
+                                </div>
                             </div>
                         </div>
     
@@ -1342,6 +1439,32 @@ export default function Profile({ isMyProfile }) {
                     </div>
                     </div>
                 )}
+                {(formData.photos?.length > 0 || formData.videos?.length > 0) && (
+                    <div className="w-full max-w-4xl p-8 bg-white shadow-lg rounded-2xl bg-opacity-90 backdrop-blur-md mt-6">
+                      <h3 className="text-2xl font-semibold text-center text-indigo-600 mb-6">
+                        Media Gallery
+                      </h3>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+                        {formData.photos.map((item, idx) => (
+                          <img
+                            key={idx}
+                            src={item.url}
+                            alt="uploaded"
+                            className="w-64 h-64 object-cover rounded-xl border shadow-md transition-transform duration-200 hover:scale-105"
+                          />
+                        ))}
+                        {formData.videos.map((item, idx) => (
+                          <video
+                            key={idx}
+                            src={item.url}
+                            controls
+                            className="w-96 h-64 object-cover rounded-xl border shadow-md transition-transform duration-200 hover:scale-105"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                )}
+
             </div>  
         </div>
     )
