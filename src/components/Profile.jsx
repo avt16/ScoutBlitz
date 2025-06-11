@@ -10,6 +10,7 @@ import { Button } from './ui/button';
 import { db, storage } from './FireBase';
 import { ref,uploadBytes, getDownloadURL} from "firebase/storage";
 import { CgSoftwareUpload } from "react-icons/cg";
+import { X } from "lucide-react";
 
 export default function Profile({ isMyProfile }) {
     const navigate = useNavigate();
@@ -92,6 +93,10 @@ export default function Profile({ isMyProfile }) {
     });
 
     const [uploading, setUploading] = useState(false);
+    const [showUploadModal, setShowUploadModal] = useState(false);
+    const [uploadDescription, setUploadDescription] = useState("");
+    const [pendingUploads, setPendingUploads] = useState([]);
+    const [uploadType, setUploadType] = useState(""); // "photo" or "video"
 
     useEffect(() => {
         const auth = getAuth();
@@ -297,25 +302,43 @@ export default function Profile({ isMyProfile }) {
         }
     };
 
-    const handleMediaUpload = async(e,type) => {
+    const handleMediaUpload = async(e, type) => {
         const files = Array.from(e.target.files);
         if(!user.uid || files.length === 0) return;
+        
+        // Store files and show modal
+        setPendingUploads(files);
+        setUploadType(type);
+        setShowUploadModal(true);
+    }
+
+    const handleSaveUploads = async () => {
+        if (!user.uid || pendingUploads.length === 0) return;
         setUploading(true);
+        
         const uploadedItems = [];
-        for (const file of files) {
-            const fileRef = ref(storage,`users/${user.uid}/${type}/${file.name}`)
+        for (const file of pendingUploads) {
+            const fileRef = ref(storage, `users/${user.uid}/${uploadType}/${file.name}`);
             await uploadBytes(fileRef, file);
             const url = await getDownloadURL(fileRef);
             uploadedItems.push({
                 url,
+                description: uploadDescription,
                 timestamp: new Date().toISOString(),
             });
         }
-        setFormData((prev)=> ({
+        
+        setFormData((prev) => ({
             ...prev,
-            [type]: [...(prev[type] || []), ...uploadedItems]
+            [uploadType]: [...(prev[uploadType] || []), ...uploadedItems]
         }));
+        
+        // Reset states
         setUploading(false);
+        setShowUploadModal(false);
+        setUploadDescription("");
+        setPendingUploads([]);
+        setUploadType("");
     }
 
     if (!user) return <p className="text-center mt-10">Please log in to view your profile.</p>;
@@ -422,11 +445,6 @@ export default function Profile({ isMyProfile }) {
                             <div className='mt-4'>
                                 {isMyProfile && editing && (
                                     <>
-                                        {/* <div className='flex flex-row gap-2 items-center text-center'>
-                                            <label className="block mb-2 font-semibold"> Upload Photos</label>
-                                            <CgSoftwareUpload size={23} />
-                                        </div>
-                                        <input type="file" accept='image/*' multiple onChange={(e)=> handleMediaUpload(e,'photos')} disabled={uploading} style={{ display: 'none' }}/> */}
                                         <div>
                                             <label htmlFor="photo-upload" className="flex items-center gap-2 cursor-pointer text-blue-600 hover:underline">
                                               <CgSoftwareUpload size={24} />
@@ -443,8 +461,6 @@ export default function Profile({ isMyProfile }) {
                                             />
                                         </div>
 
-                                        {/* <label className="block mb-2 font-semibold"> Upload Videos</label>
-                                        <input type="file" accept='video/*' multiple onChange={(e)=> handleMediaUpload(e,'videos')} disabled={uploading} style={{ display: 'none' }}/> */}
                                         <div>
                                             <label htmlFor="video-upload" className="flex items-center gap-2 cursor-pointer text-purple-600 hover:underline">
                                               <CgSoftwareUpload size={24} />
@@ -463,26 +479,6 @@ export default function Profile({ isMyProfile }) {
                                         {uploading && <div className="text-blue-500 mt-2">Uploading...</div>}
                                     </>
                                 )}
-                                {/* {formData.photos && formData.photos.length > 0 && (
-                                    <div className="mt-4">
-                                        <div className="font-semibold mb-2"> Photos: </div>
-                                        <div>
-                                            {formData.photos.map((url,idx)=> (
-                                                <img key={idx} src={url} alt="uploaded" className="w-24 h-24 object-cover rounded-lg border"/>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                                {formData.videos && formData.videos.length > 0 && (
-                                    <div className="mt-4">
-                                        <div className="font-semibold mb-2"> Videos: </div>
-                                        <div>
-                                            {formData.videos.map((url,idx)=> (
-                                                <video key={idx} src={url} controls className="w-24 h-24 object-cover rounded-lg border"/>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )} */}
                             
                                 </div>
                             </div>
@@ -1446,26 +1442,116 @@ export default function Profile({ isMyProfile }) {
                       </h3>
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
                         {formData.photos.map((item, idx) => (
-                          <img
-                            key={idx}
-                            src={item.url}
-                            alt="uploaded"
-                            className="w-64 h-64 object-cover rounded-xl border shadow-md transition-transform duration-200 hover:scale-105"
-                          />
+                          <div key={idx} className="space-y-2">
+                            <img
+                              src={item.url}
+                              alt="uploaded"
+                              className="w-64 h-64 object-cover rounded-xl border shadow-md transition-transform duration-200 hover:scale-105"
+                            />
+                            {item.description && (
+                              <p className="text-sm text-gray-600 mt-2">{item.description}</p>
+                            )}
+                          </div>
                         ))}
                         {formData.videos.map((item, idx) => (
-                          <video
-                            key={idx}
-                            src={item.url}
-                            controls
-                            className="w-96 h-64 object-cover rounded-xl border shadow-md transition-transform duration-200 hover:scale-105"
-                          />
+                          <div key={idx} className="space-y-2">
+                            <video
+                              src={item.url}
+                              controls
+                              className="w-96 h-64 object-cover rounded-xl border shadow-md transition-transform duration-200 hover:scale-105"
+                            />
+                            {item.description && (
+                              <p className="text-sm text-gray-600 mt-2">{item.description}</p>
+                            )}
+                          </div>
                         ))}
                       </div>
                     </div>
                 )}
 
             </div>  
+
+            {/* Upload Modal */}
+            {showUploadModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg p-6 w-full max-w-2xl">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-semibold text-gray-800">
+                                Add Description
+                            </h3>
+                            <button
+                                onClick={() => {
+                                    setShowUploadModal(false);
+                                    setPendingUploads([]);
+                                    setUploadDescription("");
+                                }}
+                                className="text-gray-500 hover:text-gray-700"
+                            >
+                                <X size={24} />
+                            </button>
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div className="space-y-4">
+                                <label className="block text-sm font-medium text-gray-700">
+                                    Description
+                                </label>
+                                <textarea
+                                    value={uploadDescription}
+                                    onChange={(e) => setUploadDescription(e.target.value)}
+                                    className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                    rows="4"
+                                    placeholder="Add a description for your upload..."
+                                />
+                            </div>
+                            <div className="space-y-4">
+                                <label className="block text-sm font-medium text-gray-700">
+                                    Preview
+                                </label>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {pendingUploads.map((file, index) => (
+                                        <div key={index} className="relative aspect-square">
+                                            {uploadType === 'photos' ? (
+                                                <img
+                                                    src={URL.createObjectURL(file)}
+                                                    alt={`Preview ${index + 1}`}
+                                                    className="w-full h-full object-cover rounded-lg"
+                                                />
+                                            ) : (
+                                                <video
+                                                    src={URL.createObjectURL(file)}
+                                                    className="w-full h-full object-cover rounded-lg"
+                                                    controls
+                                                />
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="flex justify-end gap-3">
+                            <Button
+                                onClick={() => {
+                                    setShowUploadModal(false);
+                                    setPendingUploads([]);
+                                    setUploadDescription("");
+                                }}
+                                variant="outline"
+                            >
+                                Cancel
+                            </Button>
+                            <Button
+                                onClick={handleSaveUploads}
+                                disabled={uploading}
+                                className="bg-indigo-600 text-white hover:bg-indigo-700"
+                            >
+                                {uploading ? "Uploading..." : "Save & Upload"}
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
