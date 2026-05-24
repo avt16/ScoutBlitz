@@ -114,3 +114,72 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── Scout theme ─────────────────────────────────────────────────────────── */
+[data-theme="scout"] {
+  --background: #0A1628;
+  --foreground: #f0f4f8;
+  color-scheme: dark;
+}
+
+/* ── Print styles for shortlist export ──────────────────────────────────── */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+
+  /* Hide everything except the shortlist content area */
+  body > * {
+    display: none !important;
+  }
+  .print-area,
+  .print-area * {
+    display: revert !important;
+  }
+  .print-area {
+    display: block !important;
+    position: static !important;
+    background: white !important;
+    color: black !important;
+    padding: 24px !important;
+  }
+
+  /* Hide interactive controls */
+  .no-print {
+    display: none !important;
+  }
+
+  /* Tables */
+  table {
+    border-collapse: collapse;
+    width: 100%;
+  }
+  th, td {
+    border: 1px solid #d1d5db;
+    padding: 6px 10px;
+    color: black !important;
+    background: white !important;
+  }
+  thead th {
+    background: #f3f4f6 !important;
+    font-weight: 600;
+  }
+
+  /* Cards */
+  .print-area .rounded-lg {
+    border: 1px solid #e5e7eb !important;
+    break-inside: avoid;
+    color: black !important;
+    background: white !important;
+  }
+
+  /* Force dark text */
+  .print-area h2,
+  .print-area h3,
+  .print-area p,
+  .print-area span,
+  .print-area div {
+    color: black !important;
+  }
+}
