@@ -353,7 +353,13 @@ export default function ProgressFeed() {
         setUser(u);
         try {
           const snap = await getDoc(doc(db, 'users', u.uid));
-          setProfile(snap.exists() ? snap.data() : {});
+          const data = snap.exists() ? snap.data() : {};
+          // FIX 5: scouts should never land here — redirect immediately
+          if (data.type === 'Scout' || data.type === 'Coach') {
+            navigate('/');
+            return;
+          }
+          setProfile(data);
         } catch {
           setProfile({});
         }
@@ -394,6 +400,34 @@ export default function ProgressFeed() {
   const prompt    = computeNextPrompt(profile);
   const enteredTimesCount = SWIM_EVENTS.filter((e) => profile[e.field]?.trim()).length;
 
+  // FIX 6: profile completion criteria
+  const completionCriteria = [
+    {
+      label: 'Add a profile photo',
+      met: Boolean(profile.profile_pic),
+    },
+    {
+      label: 'Set your primary event',
+      met: Boolean(profile.primaryEvent),
+    },
+    {
+      label: 'Get at least one time verified',
+      met: Object.values(profile.verifications || {}).some(
+        (v) => v?.status === 'meet' || v?.status === 'coach',
+      ),
+    },
+    {
+      label: 'Log a competition result',
+      met: (profile.competitionHistory?.length || 0) > 0,
+    },
+    {
+      label: 'Write a bio',
+      met: Boolean(profile.bio?.trim()),
+    },
+  ];
+  const metCount  = completionCriteria.filter((c) => c.met).length;
+  const pct       = Math.round((metCount / completionCriteria.length) * 100);
+
   return (
     <div className="flex flex-col min-h-screen bg-[#F0F7FF]">
       <Header />
@@ -407,6 +441,33 @@ export default function ProgressFeed() {
             {profile.competitionHistory?.length ? ` · ${profile.competitionHistory.length} competition${profile.competitionHistory.length !== 1 ? 's' : ''}` : ''}
             {profile.profileViewEvents?.length ? ` · ${profile.profileViewEvents.length} scout view${profile.profileViewEvents.length !== 1 ? 's' : ''}` : ''}
           </p>
+        </div>
+
+        {/* FIX 6: Profile completion bar */}
+        <div className="bg-white border border-blue-100 rounded-2xl p-5 mb-4 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm font-bold text-[#0B2E4E]">Profile Strength</span>
+            <span className="text-sm font-semibold text-amber-600">{metCount}/{completionCriteria.length}</span>
+          </div>
+          <div className="w-full bg-blue-50 rounded-full h-2.5 mb-3">
+            <div
+              className="bg-amber-400 h-2.5 rounded-full transition-all duration-500"
+              style={{ width: `${pct}%` }}
+            />
+          </div>
+          {metCount < completionCriteria.length && (
+            <ul className="space-y-1">
+              {completionCriteria.filter((c) => !c.met).map((c) => (
+                <li key={c.label} className="flex items-center gap-2 text-xs text-gray-400">
+                  <span className="w-3.5 h-3.5 rounded-full border border-gray-300 shrink-0 flex items-center justify-center text-[10px]">○</span>
+                  {c.label}
+                </li>
+              ))}
+            </ul>
+          )}
+          {metCount === completionCriteria.length && (
+            <p className="text-xs text-green-600 font-semibold">✓ Profile complete — maximum scout visibility</p>
+          )}
         </div>
 
         {/* What to do next */}

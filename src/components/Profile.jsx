@@ -178,6 +178,8 @@ export default function Profile({ isMyProfile }) {
     profile_pic: '', age: '',
     primaryEvent: '', secondaryEvent: '',
     clubName: '', coachName: '',
+    // Contact
+    contactEmail: '',
     // Swim time fields (kept for Firebase compatibility)
     swimming50mFreestyleTime: '', swimming100mFreestyleTime: '', swimming200mFreestyleTime: '',
     swimming400mFreestyleTime: '', swimming800mFreestyleTime: '', swimming1500mFreestyleTime: '',
@@ -216,6 +218,11 @@ export default function Profile({ isMyProfile }) {
       const snap = await getDoc(doc(db, 'users', uid));
       if (snap.exists()) {
         const d = snap.data();
+        // FIX 5: scouts must not land on athlete pages
+        if (isMyProfile && (d.type === 'Scout' || d.type === 'Coach')) {
+          navigate('/');
+          return;
+        }
         setFormData({
           ...defaultForm,
           ...Object.fromEntries(Object.keys(defaultForm).map((k) => [k, d[k] ?? defaultForm[k]])),
@@ -481,6 +488,19 @@ export default function Profile({ isMyProfile }) {
             <div>
               <label className="block text-xs font-medium text-gray-500 mb-1">Coach Name</label>
               <input disabled={!editing} type="text" value={formData.coachName} onChange={(e) => setFormData({ ...formData, coachName: e.target.value })} className={inputCls(!editing)} placeholder="Coach's full name" />
+            </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-gray-500 mb-1">
+                Contact Email <span className="text-amber-600 font-normal">(visible to scouts)</span>
+              </label>
+              <input
+                disabled={!editing}
+                type="email"
+                value={formData.contactEmail}
+                onChange={(e) => setFormData({ ...formData, contactEmail: e.target.value })}
+                className={inputCls(!editing)}
+                placeholder="contact@example.com — the email scouts should use to reach you or your coach"
+              />
             </div>
           </div>
 

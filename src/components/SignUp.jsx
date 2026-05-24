@@ -80,8 +80,9 @@ function SignUp() {
   const [password,         setPassword]         = useState('');
   const [name,             setName]             = useState('');
   const [type,             setType]             = useState('Athlete');
-  const [showScoutConfirm, setShowScoutConfirm] = useState(false);
-  const [loading,          setLoading]          = useState(false);
+  const [showScoutConfirm,  setShowScoutConfirm]  = useState(false);
+  const [pendingGoogleSignup, setPendingGoogleSignup] = useState(false);
+  const [loading,           setLoading]           = useState(false);
   const navigate      = useNavigate();
   const googleProvider = new GoogleAuthProvider();
 
@@ -124,9 +125,15 @@ function SignUp() {
 
   const signUpWithGoogle = async () => {
     if (type === 'Scout' || type === 'Coach') {
+      // FIX 3: show scout confirmation first, then run Google flow after confirm
+      setPendingGoogleSignup(true);
       setShowScoutConfirm(true);
       return;
     }
+    await runGoogleSignup();
+  };
+
+  const runGoogleSignup = async () => {
     setLoading(true);
     try {
       const res = await signInWithPopup(auth, googleProvider);
@@ -143,7 +150,11 @@ function SignUp() {
           createdAt: serverTimestamp(),
         });
       }
-      navigate('/profile');
+      if (type === 'Scout' || type === 'Coach') {
+        window.location.href = '/';
+      } else {
+        navigate('/profile');
+      }
     } catch (err) {
       console.error(err);
       alert(err.message);
@@ -151,10 +162,15 @@ function SignUp() {
     }
   };
 
-  // Scout confirmation confirmed — run the actual account creation
+  // Scout confirmation confirmed — branch on whether it was Google or email/password
   const handleScoutConfirmed = () => {
     setShowScoutConfirm(false);
-    createAccount();
+    if (pendingGoogleSignup) {
+      setPendingGoogleSignup(false);
+      runGoogleSignup();
+    } else {
+      createAccount();
+    }
   };
 
   if (showScoutConfirm) {

@@ -106,12 +106,15 @@ function FilterSidebar({
   filterAgeMax, setFilterAgeMax,
   filterVerifiedOnly, setFilterVerifiedOnly,
   filterUnderservedOnly, setFilterUnderservedOnly,
+  filterTimeMin, setFilterTimeMin,
+  filterTimeMax, setFilterTimeMax,
   resultCount,
 }) {
   const clearAll = () => {
     setSearch(''); setFilterEvent(''); setFilterGender('');
     setFilterState(''); setFilterAgeMin(''); setFilterAgeMax('');
     setFilterVerifiedOnly(false); setFilterUnderservedOnly(false);
+    setFilterTimeMin(''); setFilterTimeMax('');
   };
 
   return (
@@ -149,6 +152,31 @@ function FilterSidebar({
             <option key={e.label} value={e.label}>{e.label}</option>
           ))}
         </select>
+      </div>
+
+      {/* FIX 2: Time range — only active when an event is selected */}
+      <div>
+        <label className="block text-xs font-medium text-gray-400 mb-1.5">Time Range</label>
+        <div className="flex gap-2 items-center">
+          <input
+            disabled={!filterEvent}
+            value={filterTimeMin}
+            onChange={(e) => setFilterTimeMin(e.target.value)}
+            placeholder="e.g. 52.00"
+            className={`w-full bg-[#0A1628] border border-[#1E3A5F] rounded-md px-2 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500 transition-colors ${!filterEvent ? 'opacity-40 cursor-not-allowed' : ''}`}
+          />
+          <span className="text-gray-600 text-sm shrink-0">–</span>
+          <input
+            disabled={!filterEvent}
+            value={filterTimeMax}
+            onChange={(e) => setFilterTimeMax(e.target.value)}
+            placeholder="e.g. 1:00.00"
+            className={`w-full bg-[#0A1628] border border-[#1E3A5F] rounded-md px-2 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500 transition-colors ${!filterEvent ? 'opacity-40 cursor-not-allowed' : ''}`}
+          />
+        </div>
+        {!filterEvent && (
+          <p className="text-[10px] text-gray-600 mt-1">Select an event above to filter by time</p>
+        )}
       </div>
 
       {/* Gender */}
@@ -446,6 +474,7 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
               { label: 'Secondary Event', value: athlete.secondaryEvent },
               { label: 'Height',          value: athlete.height ? `${athlete.height} cm` : null },
               { label: 'Wingspan',        value: athlete.reach  ? `${athlete.reach} cm`  : null },
+              { label: 'Contact Email',   value: athlete.contactEmail || null },
             ].filter((f) => f.value).map(({ label, value }) => (
               <div key={label} className="bg-[#0A1628] rounded-md px-3 py-2">
                 <div className="text-[11px] text-gray-500">{label}</div>
@@ -727,6 +756,35 @@ function ShortlistsScreen({
               })}
             </div>
 
+            {/* FIX 7: Contact info table — shows in print export */}
+            <div className="mb-8">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">
+                Contact Information
+              </h3>
+              <div className="rounded-lg border border-[#1E3A5F] overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-[#0D1F35]">
+                    <tr>
+                      <th className="px-4 py-2.5 text-left text-gray-400 font-medium">Name</th>
+                      <th className="px-4 py-2.5 text-left text-gray-400 font-medium">State</th>
+                      <th className="px-4 py-2.5 text-left text-gray-400 font-medium">Club</th>
+                      <th className="px-4 py-2.5 text-left text-gray-400 font-medium">Contact Email</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#1E3A5F]">
+                    {currentAthletes.map((a) => (
+                      <tr key={a.id} className="hover:bg-[#0D1F35]/50">
+                        <td className="px-4 py-2 text-white font-medium">{a.name}</td>
+                        <td className="px-4 py-2 text-gray-300">{a.state || '—'}</td>
+                        <td className="px-4 py-2 text-gray-300">{a.clubName || '—'}</td>
+                        <td className="px-4 py-2 text-amber-300 font-mono">{a.contactEmail || '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
             {/* Time comparison table */}
             {relevantEvents.length > 0 && (
               <div>
@@ -780,6 +838,53 @@ function ShortlistsScreen({
   );
 }
 
+// ─── Smart empty state (FIX 8) ───────────────────────────────────────────────
+
+function SmartEmptyState({
+  filterVerifiedOnly, filterEvent, filterTimeMin, filterTimeMax, filterState,
+  onClearVerified, onClearTimeRange, onClearState,
+}) {
+  let msg, sub, btnLabel, btnAction;
+
+  if (filterVerifiedOnly) {
+    msg = 'No verified athletes found.';
+    sub = 'Try turning off "Verified times only" to see all athletes.';
+    btnLabel = 'Turn off verified filter';
+    btnAction = onClearVerified;
+  } else if (filterEvent && (filterTimeMin || filterTimeMax)) {
+    msg = 'No athletes found in this time range.';
+    sub = 'Try widening your min/max times.';
+    btnLabel = 'Clear time range';
+    btnAction = onClearTimeRange;
+  } else if (filterState) {
+    msg = `No athletes found in ${filterState}.`;
+    sub = 'Try searching all of India.';
+    btnLabel = 'Search all states';
+    btnAction = onClearState;
+  } else {
+    msg = 'No athletes match your filters.';
+    sub = 'Try adjusting or clearing some filters.';
+    btnLabel = null;
+    btnAction = null;
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-center py-24 text-center">
+      <Users size={40} className="mb-3 text-gray-700 opacity-30" />
+      <p className="text-sm text-gray-400 font-medium">{msg}</p>
+      <p className="text-xs text-gray-600 mt-1">{sub}</p>
+      {btnLabel && (
+        <button
+          onClick={btnAction}
+          className="mt-4 px-4 py-1.5 text-xs bg-[#1E3A5F] text-amber-300 rounded-md hover:bg-[#2a4f7a] transition-colors"
+        >
+          {btnLabel}
+        </button>
+      )}
+    </div>
+  );
+}
+
 // ─── Main ScoutApp ────────────────────────────────────────────────────────────
 
 export default function ScoutApp({ uid }) {
@@ -804,6 +909,8 @@ export default function ScoutApp({ uid }) {
   const [filterAgeMax,       setFilterAgeMax]       = useState('');
   const [filterVerifiedOnly, setFilterVerifiedOnly] = useState(false);
   const [filterUnderserved,  setFilterUnderserved]  = useState(false);
+  const [filterTimeMin,      setFilterTimeMin]      = useState('');
+  const [filterTimeMax,      setFilterTimeMax]      = useState('');
 
   // Shortlists  { listName: [uid, ...] }
   const [shortlists,      setShortlists]      = useState({ 'My Shortlist': [] });
@@ -848,7 +955,17 @@ export default function ScoutApp({ uid }) {
   // ── Filtering ───────────────────────────────────────────────────────────────
   const filtered = athletes.filter((a) => {
     if (search && !a.name?.toLowerCase().includes(search.toLowerCase())) return false;
-    if (filterEvent && a.primaryEvent !== filterEvent && a.secondaryEvent !== filterEvent) return false;
+    // FIX 1: check whether athlete has a non-empty time in the selected event's field
+    if (filterEvent) {
+      const eventField = SWIM_EVENT_FIELDS[filterEvent];
+      if (!eventField || !a[eventField] || !a[eventField].trim()) return false;
+      // FIX 2: time range filter (only when event is also selected)
+      const atSecs  = parseTime(a[eventField]);
+      const minSecs = parseTime(filterTimeMin);
+      const maxSecs = parseTime(filterTimeMax);
+      if (minSecs !== null && atSecs !== null && atSecs < minSecs) return false;
+      if (maxSecs !== null && atSecs !== null && atSecs > maxSecs) return false;
+    }
     if (filterGender && a.gender?.toLowerCase() !== filterGender.toLowerCase()) return false;
     if (filterState && a.state !== filterState) return false;
     if (filterAgeMin && (!a.age || Number(a.age) < Number(filterAgeMin))) return false;
@@ -941,6 +1058,8 @@ export default function ScoutApp({ uid }) {
             filterAgeMax={filterAgeMax}       setFilterAgeMax={setFilterAgeMax}
             filterVerifiedOnly={filterVerifiedOnly} setFilterVerifiedOnly={setFilterVerifiedOnly}
             filterUnderservedOnly={filterUnderserved} setFilterUnderservedOnly={setFilterUnderserved}
+            filterTimeMin={filterTimeMin}   setFilterTimeMin={setFilterTimeMin}
+            filterTimeMax={filterTimeMax}   setFilterTimeMax={setFilterTimeMax}
             resultCount={filtered.length}
           />
 
@@ -970,10 +1089,16 @@ export default function ScoutApp({ uid }) {
                 <div className="text-sm">Loading athletes…</div>
               </div>
             ) : filtered.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-24 text-gray-600">
-                <Users size={40} className="mb-3 opacity-25" />
-                <p className="text-sm">No athletes match your filters.</p>
-              </div>
+              <SmartEmptyState
+                filterVerifiedOnly={filterVerifiedOnly}
+                filterEvent={filterEvent}
+                filterTimeMin={filterTimeMin}
+                filterTimeMax={filterTimeMax}
+                filterState={filterState}
+                onClearVerified={() => setFilterVerifiedOnly(false)}
+                onClearTimeRange={() => { setFilterTimeMin(''); setFilterTimeMax(''); }}
+                onClearState={() => setFilterState('')}
+              />
             ) : viewMode === 'table' ? (
               <AthleteTable
                 athletes={filtered}
