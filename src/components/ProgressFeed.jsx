@@ -361,6 +361,7 @@ export default function ProgressFeed() {
           const snap = await getDoc(doc(db, 'users', u.uid));
           const data = snap.exists() ? snap.data() : {};
           if (data.type === 'Scout' || data.type === 'Coach') {
+            setLoading(false);
             navigate('/');
             return;
           }
@@ -376,6 +377,15 @@ export default function ProgressFeed() {
     });
     return () => unsub();
   }, []);
+
+  // All useMemo hooks MUST come before any early returns to satisfy Rules of Hooks.
+  // The null checks handle the loading/unauthenticated states.
+  const entries           = useMemo(() => profile ? generateFeedEntries(profile) : [], [profile]);
+  const prompt            = useMemo(() => profile ? computeNextPrompt(profile)   : null, [profile]);
+  const enteredTimesCount = useMemo(
+    () => profile ? SWIM_EVENTS.filter((e) => profile[e.field]?.trim()).length : 0,
+    [profile],
+  );
 
   if (loading) {
     return (
@@ -400,13 +410,6 @@ export default function ProgressFeed() {
       </div>
     );
   }
-
-  const entries           = useMemo(() => generateFeedEntries(profile), [profile]);
-  const prompt            = useMemo(() => computeNextPrompt(profile),   [profile]);
-  const enteredTimesCount = useMemo(
-    () => SWIM_EVENTS.filter((e) => profile[e.field]?.trim()).length,
-    [profile],
-  );
 
   const completionCriteria = [
     {
