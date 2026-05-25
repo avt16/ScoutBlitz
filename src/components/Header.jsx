@@ -14,13 +14,14 @@ function Header() {
   const navigate = useNavigate();
   const auth     = getAuth();
 
-  // Debounced swimmer search
+  // Debounced swimmer search — athletes only (Bug A6)
   useEffect(() => {
     const run = async () => {
       if (!search.trim()) { setShowResults(false); setSearchResults([]); return; }
       try {
         const q = query(
           collection(db, 'users'),
+          where('type', '==', 'Athlete'),
           where('name', '>=', search),
           where('name', '<=', search + ''),
         );

@@ -11,6 +11,7 @@ import HomePage from './components/HomePage';
 import Profile from './components/Profile';
 import ProgressFeed from './components/ProgressFeed';
 import ScoutApp from './components/ScoutApp';
+import VerifyTime from './components/VerifyTime';
 import { UserContext } from './context/UserContext';
 
 // ─── Loading splash ───────────────────────────────────────────────────────────
@@ -55,53 +56,62 @@ function App() {
   const isScout   = userType === 'Scout' || userType === 'Coach';
   const isAthlete = userType === 'Athlete';
 
-  // ── Scout experience — completely separate product ──────────────────────────
-  if (isScout && authUid) {
-    return (
-      <div data-theme="scout">
-        <Analytics />
-        <ScoutApp uid={authUid} />
-      </div>
-    );
-  }
-
-  // ── Athlete + public experience ─────────────────────────────────────────────
   return (
     <UserContext.Provider value={{ userType, authUid }}>
-    <div data-theme="athlete">
       <BrowserRouter>
         <Analytics />
         <Routes>
-          {/* Public */}
-          <Route path="/"              element={<HomePage />} />
-          <Route path="/login"         element={<Login setUserType={setUserType} />} />
-          <Route path="/signup"        element={<SignUp setUserType={setUserType} />} />
-          <Route path="/forgotPassword" element={<ForgotPassword />} />
+          {/* Public coach-verification page — works regardless of auth state */}
+          <Route path="/verify/:token" element={<VerifyTime />} />
 
-          {/* Athlete-gated */}
+          {/* Everything else delegates to the type-appropriate experience */}
           <Route
-            path="/profile"
-            element={isAthlete ? <Profile isMyProfile={true} /> : <Navigate to="/login" replace />}
+            path="*"
+            element={
+              isScout && authUid ? (
+                <div data-theme="scout">
+                  <ScoutApp uid={authUid} />
+                </div>
+              ) : (
+                <div data-theme="athlete">
+                  <AthleteRoutes
+                    isAthlete={isAthlete}
+                    setUserType={setUserType}
+                  />
+                </div>
+              )
+            }
           />
-          <Route
-            path="/profile/:userId"
-            element={<Profile isMyProfile={false} />}
-          />
-          <Route
-            path="/progress"
-            element={isAthlete ? <ProgressFeed /> : <Navigate to="/login" replace />}
-          />
-
-          {/* Legacy redirects */}
-          <Route path="/feed"      element={<Navigate to="/progress" replace />} />
-          <Route path="/discovery" element={<Navigate to="/" replace />} />
-
-          {/* Catch-all */}
-          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
-    </div>
     </UserContext.Provider>
+  );
+}
+
+// ─── Athlete / public route table ────────────────────────────────────────────
+
+function AthleteRoutes({ isAthlete, setUserType }) {
+  return (
+    <Routes>
+      <Route path="/"              element={<HomePage />} />
+      <Route path="/login"         element={<Login setUserType={setUserType} />} />
+      <Route path="/signup"        element={<SignUp setUserType={setUserType} />} />
+      <Route path="/forgotPassword" element={<ForgotPassword />} />
+
+      <Route
+        path="/profile"
+        element={isAthlete ? <Profile isMyProfile={true} /> : <Navigate to="/login" replace />}
+      />
+      <Route path="/profile/:userId" element={<Profile isMyProfile={false} />} />
+      <Route
+        path="/progress"
+        element={isAthlete ? <ProgressFeed /> : <Navigate to="/login" replace />}
+      />
+
+      <Route path="/feed"      element={<Navigate to="/progress" replace />} />
+      <Route path="/discovery" element={<Navigate to="/" replace />} />
+      <Route path="*"          element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 

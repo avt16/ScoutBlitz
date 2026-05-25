@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db } from './FireBase';
 import {
-  collection, getDocs, doc, getDoc, setDoc, updateDoc, arrayUnion, query, where,
+  collection, getDocs, doc, getDoc, setDoc, updateDoc, arrayUnion, query, where, increment,
 } from 'firebase/firestore';
 import { signOut, getAuth } from 'firebase/auth';
 import {
   SWIM_EVENTS, SWIM_EVENT_FIELDS, BENCHMARKS,
   UNDERSERVED_STATES, INDIAN_STATES,
-  parseTime, fmtSecs, getVerificationLevel, getBestTimeForEvent,
+  parseTime, fmtSecs, formatTime, getVerificationLevel, getBestTimeForEvent,
 } from '../data/swimData';
 import {
   Search, Star, X, LogOut, Users, Waves,
@@ -174,8 +174,12 @@ function FilterSidebar({
             className={`w-full bg-[#0A1628] border border-[#1E3A5F] rounded-md px-2 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500 transition-colors ${!filterEvent ? 'opacity-40 cursor-not-allowed' : ''}`}
           />
         </div>
-        {!filterEvent && (
+        {!filterEvent ? (
           <p className="text-[10px] text-gray-600 mt-1">Select an event above to filter by time</p>
+        ) : (
+          <p className="text-[10px] text-gray-600 mt-1">
+            Accepts <span className="font-mono">54.32</span> or <span className="font-mono">1:54.32</span>
+          </p>
         )}
       </div>
 
@@ -308,7 +312,7 @@ function AthleteTable({ athletes, isShortlisted, onOpen, onToggleShortlist, acti
                 </td>
                 <td className="px-4 py-3 text-xs text-gray-300">{athlete.primaryEvent || '—'}</td>
                 <td className="px-4 py-3">
-                  <span className="font-mono font-semibold text-white">{bestTime || '—'}</span>
+                  <span className="font-mono font-semibold text-white">{bestTime ? formatTime(bestTime) : '—'}</span>
                 </td>
                 <td className="px-4 py-3">
                   <VerifBadge level={verif} />
@@ -366,7 +370,7 @@ function AthleteCards({ athletes, isShortlisted, onOpen, onToggleShortlist, acti
               </button>
             </div>
             <div className="text-xs text-gray-500 mb-1">{athlete.primaryEvent || 'No primary event'}</div>
-            <div className="font-mono text-lg font-bold text-white mb-2">{bestTime || '—'}</div>
+            <div className="font-mono text-lg font-bold text-white mb-2">{bestTime ? formatTime(bestTime) : '—'}</div>
             <div className="flex items-center gap-1.5 flex-wrap">
               <VerifBadge level={verif} />
               {underserved && <GrassBadge />}
@@ -542,7 +546,7 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
                   >
                     <span className="text-xs text-gray-300">{label}</span>
                     <div className="flex items-center gap-2">
-                      <span className="font-mono text-sm text-white">{timeStr}</span>
+                      <span className="font-mono text-sm text-white">{formatTime(timeStr)}</span>
                       {eventVerif === 'meet'  && <span className="text-[10px] text-emerald-400">✓ Meet</span>}
                       {eventVerif === 'coach' && <span className="text-[10px] text-blue-400">✓ Coach</span>}
                     </div>
@@ -569,7 +573,7 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
                       <div className="text-[10px] text-gray-500">{comp.event} · {comp.date}</div>
                     </div>
                     <div className="text-right ml-2">
-                      <div className="font-mono text-sm text-white">{comp.time}</div>
+                      <div className="font-mono text-sm text-white">{formatTime(comp.time)}</div>
                       {comp.placing && <div className="text-[10px] text-amber-400">{comp.placing}</div>}
                     </div>
                   </div>
@@ -751,7 +755,7 @@ function ShortlistsScreen({
                       </button>
                     </div>
                     <div className="text-xs text-gray-500">{athlete.primaryEvent || '—'}</div>
-                    <div className="font-mono font-bold text-base text-white">{bestTime || '—'}</div>
+                    <div className="font-mono font-bold text-base text-white">{bestTime ? formatTime(bestTime) : '—'}</div>
                     <div className="flex gap-1.5 mt-2 flex-wrap">
                       <VerifBadge level={verif} />
                       {underserved && <GrassBadge />}
@@ -1013,13 +1017,19 @@ export default function ScoutApp({ uid }) {
     }, 800);
   };
 
-  // ── Open athlete ─────────────────────────────────────────────────────────────
+  // ── Open athlete (Fix 4: track scout views as a real signal) ────────────────
+  // Increments two counters on the athlete's user doc:
+  //   profileViews — lifetime total
+  //   profileViewsThisWeek — surfaced on ProgressFeed + Profile
+  // Profile.jsx rolls the weekly counter over at week boundary client-side.
   const openAthlete = async (athlete) => {
     setSelectedAthlete(athlete);
-    // Track profile view
     try {
       await updateDoc(doc(db, 'users', athlete.uid || athlete.id), {
-        profileViewEvents: arrayUnion(new Date().toISOString()),
+        profileViewEvents:     arrayUnion(new Date().toISOString()),
+        profileViews:          increment(1),
+        profileViewsThisWeek:  increment(1),
+        lastViewedAt:          new Date().toISOString(),
       });
     } catch (_) { /* non-critical */ }
   };

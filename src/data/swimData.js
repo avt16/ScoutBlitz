@@ -91,3 +91,82 @@ export const getBestTimeForEvent = (user, event) => {
   const field = SWIM_EVENT_FIELDS[event];
   return field ? user[field] || null : null;
 };
+
+// Display helper: take a raw time string from user input, return a canonical
+// "m:ss.xx" or "ss.xx" string. If the input can't be parsed, returns the
+// original string so we don't silently swallow data.
+export const formatTime = (str) => {
+  if (!str || typeof str !== 'string') return '';
+  const secs = parseTime(str);
+  return secs === null ? str : fmtSecs(secs);
+};
+
+// World record times (in seconds) as of 2025. Used by SmartTimeInput to flag
+// impossibly fast entries. Long-course pool, men's & women's open category.
+// Source: World Aquatics / FINA — rounded down conservatively to allow for
+// updates. If an athlete's time is faster than this, they're either a record
+// holder (~zero people on the platform) or they fat-fingered the input.
+export const WORLD_RECORDS = {
+  '50m Freestyle':          { male: 20.91, female: 23.61 },
+  '100m Freestyle':         { male: 46.40, female: 51.71 },
+  '200m Freestyle':         { male: 102.00, female: 112.98 },
+  '400m Freestyle':         { male: 220.07, female: 235.38 },
+  '800m Freestyle':         { male: 452.12, female: 484.79 },
+  '1500m Freestyle':        { male: 868.19, female: 920.48 },
+  '50m Backstroke':         { male: 23.55, female: 26.86 },
+  '100m Backstroke':        { male: 51.60, female: 57.13 },
+  '200m Backstroke':        { male: 111.92, female: 124.12 },
+  '50m Breaststroke':       { male: 25.95, female: 29.16 },
+  '100m Breaststroke':      { male: 56.88, female: 64.13 },
+  '200m Breaststroke':      { male: 125.48, female: 138.95 },
+  '50m Butterfly':          { male: 22.27, female: 24.43 },
+  '100m Butterfly':         { male: 49.45, female: 55.18 },
+  '200m Butterfly':         { male: 110.34, female: 121.81 },
+  '200m Individual Medley': { male: 114.00, female: 125.50 },
+  '400m Individual Medley': { male: 243.42, female: 266.12 },
+};
+
+// Smart parser that accepts the casual formats athletes use:
+//   "54"        → 54.00
+//   "54.32"     → 54.32
+//   "0:54.32"   → 54.32
+//   "1:54.32"   → 114.32
+//   "1.54.32"   → 114.32  (people type periods instead of colons)
+// Returns null on garbage.
+export const parseTimeSmart = (input) => {
+  if (input === null || input === undefined) return null;
+  const s = String(input).trim();
+  if (!s) return null;
+
+  // Replace "1.54.32" → "1:54.32" if there are 2 dots
+  const dotCount = (s.match(/\./g) || []).length;
+  let normalised = s;
+  if (dotCount === 2 && !s.includes(':')) {
+    const i = s.indexOf('.');
+    normalised = s.slice(0, i) + ':' + s.slice(i + 1);
+  }
+
+  if (normalised.includes(':')) {
+    const [m, sec] = normalised.split(':');
+    const minutes = parseFloat(m);
+    const seconds = parseFloat(sec);
+    if (isNaN(minutes) || isNaN(seconds) || minutes < 0 || seconds < 0 || seconds >= 60) return null;
+    return minutes * 60 + seconds;
+  }
+  const v = parseFloat(normalised);
+  return isNaN(v) || v < 0 ? null : v;
+};
+
+// Validate a parsed time against the world record for the event.
+// Returns { ok: true } or { ok: false, reason: '...' }.
+export const validateTime = (secs, event, gender) => {
+  if (secs === null || secs === undefined) return { ok: false, reason: 'Invalid time format' };
+  if (secs <= 0) return { ok: false, reason: 'Time must be greater than zero' };
+  const wr = WORLD_RECORDS[event];
+  if (!wr) return { ok: true };
+  const gk = gender === 'Female' ? 'female' : 'male';
+  if (secs < wr[gk]) {
+    return { ok: false, reason: `Faster than the current world record (${fmtSecs(wr[gk])}). Double-check your entry.` };
+  }
+  return { ok: true };
+};

@@ -1,22 +1,67 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import Header from './Header';
 import { IoCamera } from 'react-icons/io5';
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar';
-import { setDoc, doc, getDoc } from 'firebase/firestore';
+import { setDoc, doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from './ui/button';
 import { db, storage } from './FireBase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { CgSoftwareUpload } from 'react-icons/cg';
-import { X, Plus, ShieldCheck, Shield, AlertCircle, Waves } from 'lucide-react';
-
+import {
+  X, Plus, ShieldCheck, Shield, AlertCircle, Waves, Copy, Check,
+  Eye, MessageSquare, Send,
+} from 'lucide-react';
 import {
   INDIAN_STATES, UNDERSERVED_STATES, SWIM_EVENTS, BENCHMARKS,
-  parseTime, fmtSecs,
+  parseTime, fmtSecs, formatTime,
 } from '../data/swimData';
+import SmartTimeInput from './SmartTimeInput';
 
-// ─── Benchmark panel ─────────────────────────────────────────────────────────
+// ─── Module-level constants (don't recreate on every render — bug A7) ────────
+
+const DEFAULT_FORM = {
+  email: '', type: 'Athlete', name: '', bio: '', gender: '',
+  state: '', city: '', height: '', weight: '', reach: '',
+  profile_pic: '', age: '',
+  primaryEvent: '', secondaryEvent: '',
+  clubName: '', coachName: '',
+  contactEmail: '',
+  // Swim time fields
+  swimming50mFreestyleTime: '', swimming100mFreestyleTime: '', swimming200mFreestyleTime: '',
+  swimming400mFreestyleTime: '', swimming800mFreestyleTime: '', swimming1500mFreestyleTime: '',
+  swimming50mBackstrokeTime: '', swimming100mBackstrokeTime: '', swimming200mBackstrokeTime: '',
+  swimming50mBreaststrokeTime: '', swimming100mBreaststrokeTime: '', swimming200mBreaststrokeTime: '',
+  swimming50mButterflyTime: '', swimming100mButterflyTime: '', swimming200mButterflyTime: '',
+  swimming200mIndividualMedleyTime: '', swimming400mIndividualMedleyTime: '',
+  verifications: {},
+  competitionHistory: [],
+  photos: [], videos: [],
+  // Scout-activity counters (Fix 4)
+  profileViews: 0,
+  profileViewsThisWeek: 0,
+  profileViewEvents: [],
+};
+
+const PLACE_COLORS = {
+  '1st': 'bg-amber-100 text-amber-700',
+  '2nd': 'bg-gray-100 text-gray-600',
+  '3rd': 'bg-orange-100 text-orange-600',
+};
+
+const COMPLETION_CRITERIA = [
+  { key: 'photo',    label: 'Profile photo',         test: (d) => Boolean(d.profile_pic) },
+  { key: 'name',     label: 'Name',                  test: (d) => Boolean(d.name?.trim()) },
+  { key: 'state',    label: 'State',                 test: (d) => Boolean(d.state) },
+  { key: 'event',    label: 'Primary event',         test: (d) => Boolean(d.primaryEvent) },
+  { key: 'verified', label: 'At least one verified time',
+    test: (d) => Object.values(d.verifications || {}).some((v) => v?.status === 'meet' || v?.status === 'coach') },
+  { key: 'bio',      label: 'Short bio',             test: (d) => Boolean(d.bio?.trim()) },
+  { key: 'contact',  label: 'Contact email for scouts', test: (d) => Boolean(d.contactEmail?.trim()) },
+];
+
+// ─── Benchmark panel — renders on public profile too (Fix 3) ─────────────────
 
 function BenchmarkPanel({ event, time, gender }) {
   if (!event || !time || !BENCHMARKS[event]) return null;
@@ -39,7 +84,7 @@ function BenchmarkPanel({ event, time, gender }) {
         <span className="text-blue-300 text-sm font-medium">{event}</span>
       </div>
       <div className="flex items-baseline gap-2 mb-5">
-        <span className="text-4xl font-extrabold">{time}</span>
+        <span className="text-4xl font-extrabold">{formatTime(time)}</span>
         <span className="text-blue-300 text-sm">personal best</span>
       </div>
 
@@ -69,7 +114,7 @@ function BenchmarkPanel({ event, time, gender }) {
   );
 }
 
-// ─── Verification badge ───────────────────────────────────────────────────────
+// ─── Verification badge ──────────────────────────────────────────────────────
 
 function VerificationBadge({ status }) {
   if (status === 'meet') {
@@ -93,53 +138,214 @@ function VerificationBadge({ status }) {
   );
 }
 
-// ─── Profile component ────────────────────────────────────────────────────────
+// ─── Profile completion bar (Fix 6) ──────────────────────────────────────────
+
+function CompletionBar({ formData }) {
+  const items = COMPLETION_CRITERIA.map((c) => ({ ...c, met: c.test(formData) }));
+  const met = items.filter((i) => i.met).length;
+  const pct = Math.round((met / items.length) * 100);
+
+  return (
+    <div className="bg-white border border-blue-100 rounded-2xl p-5 shadow-sm">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-bold text-[#0B2E4E]">Profile Strength</span>
+        <span className="text-sm font-semibold text-amber-600">{met}/{items.length}</span>
+      </div>
+      <div className="w-full bg-blue-50 rounded-full h-2.5 mb-3">
+        <div
+          className="bg-amber-400 h-2.5 rounded-full transition-all duration-500"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      {met < items.length && (
+        <div className="space-y-1.5">
+          {items.filter((i) => !i.met).map((i) => (
+            <div key={i.key} className="flex items-center gap-2 text-xs text-gray-600">
+              <div className="w-3.5 h-3.5 rounded-full border-2 border-gray-300 shrink-0" />
+              <span>{i.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      {met === items.length && (
+        <div className="text-xs text-green-700 font-medium">All set — your profile is complete.</div>
+      )}
+    </div>
+  );
+}
+
+// ─── Scout activity card (Fix 4 surface) ─────────────────────────────────────
+
+function ScoutActivityCard({ formData }) {
+  const events = formData.profileViewEvents || [];
+  const total  = events.length || Number(formData.profileViews) || 0;
+
+  // Compute "this week" from the event log — accurate, no server rollover needed.
+  const now = new Date();
+  const currentWeek = isoWeek(now);
+  const currentYear = now.getFullYear();
+  const thisWeek = events.filter((ts) => {
+    const d = new Date(ts);
+    return isoWeek(d) === currentWeek && d.getFullYear() === currentYear;
+  }).length;
+
+  if (total === 0) {
+    return (
+      <div className="bg-white border border-blue-100 rounded-2xl p-5 shadow-sm">
+        <div className="flex items-center gap-2 mb-1">
+          <Eye size={16} className="text-gray-400" />
+          <span className="text-sm font-bold text-[#0B2E4E]">Scout Activity</span>
+        </div>
+        <p className="text-xs text-gray-500">
+          No scouts have viewed your profile yet. Complete your profile and verify
+          your times to get discovered.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-blue-100 rounded-2xl p-5 shadow-sm">
+      <div className="flex items-center gap-2 mb-1">
+        <Eye size={16} className="text-amber-500" />
+        <span className="text-sm font-bold text-[#0B2E4E]">Scout Activity</span>
+      </div>
+      <p className="text-sm text-gray-700">
+        Your profile was viewed{' '}
+        <span className="font-bold text-amber-600">{thisWeek}</span> time
+        {thisWeek === 1 ? '' : 's'} this week ({total} total).
+      </p>
+    </div>
+  );
+}
+
+// ─── Request-verification modal (Fix 10) ─────────────────────────────────────
+
+function RequestVerifyModal({ open, onClose, athleteId, athleteName, field, label, time }) {
+  const [token, setToken] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setToken(null); setCopied(false); setError(null);
+    const create = async () => {
+      setCreating(true);
+      try {
+        const newToken = crypto.randomUUID
+          ? crypto.randomUUID()
+          : Math.random().toString(36).slice(2) + Date.now().toString(36);
+        await setDoc(doc(db, 'verificationRequests', newToken), {
+          athleteId, athleteName, field, label, time,
+          status: 'pending',
+          createdAt: new Date().toISOString(),
+        });
+        setToken(newToken);
+      } catch (e) {
+        setError('Could not create verification link. Try again.');
+      }
+      setCreating(false);
+    };
+    create();
+  }, [open, athleteId, athleteName, field, label, time]);
+
+  if (!open) return null;
+  const url = token ? `${window.location.origin}/verify/${token}` : '';
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (_) {}
+  };
+
+  const whatsappText = encodeURIComponent(
+    `Hi Coach, can you verify my ${label} time of ${formatTime(time)} on SwimBlitz? Takes ten seconds: ${url}`
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+      <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h3 className="text-lg font-bold text-[#0B2E4E]">Request Coach Verification</h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Send this link to your coach via WhatsApp or email. They'll see your
+              claimed time and confirm — no SwimBlitz account needed.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 ml-2">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="bg-blue-50 rounded-lg p-3 mb-4">
+          <div className="text-xs text-gray-500 mb-0.5">{label}</div>
+          <div className="text-2xl font-extrabold text-[#0B2E4E]">{formatTime(time)}</div>
+        </div>
+
+        {creating && <div className="text-sm text-gray-500">Generating link…</div>}
+        {error && <div className="text-sm text-red-600 bg-red-50 rounded p-2">{error}</div>}
+
+        {token && !error && (
+          <>
+            <div className="flex gap-2 mb-3">
+              <input
+                readOnly
+                value={url}
+                className="flex-1 border border-gray-200 rounded-lg px-3 py-2 text-xs font-mono bg-gray-50 focus:outline-none"
+              />
+              <button
+                onClick={copy}
+                className="px-3 py-2 bg-[#0B2E4E] text-white rounded-lg text-xs font-medium hover:bg-[#0d3a5c] flex items-center gap-1.5"
+              >
+                {copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
+              </button>
+            </div>
+
+            <a
+              href={`https://wa.me/?text=${whatsappText}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full flex items-center justify-center gap-1.5 bg-green-500 text-white py-2 rounded-lg text-sm font-medium hover:bg-green-600 transition-colors"
+            >
+              <Send size={14} /> Share via WhatsApp
+            </a>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main Profile component ──────────────────────────────────────────────────
 
 export default function Profile({ isMyProfile }) {
   const navigate = useNavigate();
   const { userId } = useParams();
   const [user, setUser] = useState(null);
   const [editing, setEditing] = useState(false);
-
-  const defaultForm = {
-    email: '', type: '', name: '', bio: '', gender: '',
-    state: '', city: '', height: '', weight: '', reach: '',
-    profile_pic: '', age: '',
-    primaryEvent: '', secondaryEvent: '',
-    clubName: '', coachName: '',
-    // Contact
-    contactEmail: '',
-    // Swim time fields (kept for Firebase compatibility)
-    swimming50mFreestyleTime: '', swimming100mFreestyleTime: '', swimming200mFreestyleTime: '',
-    swimming400mFreestyleTime: '', swimming800mFreestyleTime: '', swimming1500mFreestyleTime: '',
-    swimming50mBackstrokeTime: '', swimming100mBackstrokeTime: '', swimming200mBackstrokeTime: '',
-    swimming50mBreaststrokeTime: '', swimming100mBreaststrokeTime: '', swimming200mBreaststrokeTime: '',
-    swimming50mButterflyTime: '', swimming100mButterflyTime: '', swimming200mButterflyTime: '',
-    swimming200mIndividualMedleyTime: '', swimming400mIndividualMedleyTime: '',
-    // Verification metadata
-    verifications: {},
-    // Competition history
-    competitionHistory: [],
-    // Media
-    photos: [], videos: [],
-  };
-
-  const [formData, setFormData] = useState(defaultForm);
+  const [formData, setFormData] = useState(DEFAULT_FORM);
   const [uploading, setUploading] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [uploadDescription, setUploadDescription] = useState('');
   const [pendingUploads, setPendingUploads] = useState([]);
   const [uploadType, setUploadType] = useState('');
-
-  // Competition history form
   const [newComp, setNewComp] = useState({ meetName: '', date: '', event: '', placing: '', time: '' });
+  const [saveErrors, setSaveErrors] = useState([]);
+  const [profileMissing, setProfileMissing] = useState(false);  // Bug A8 — invalid /:userId
+  const [verifyTarget, setVerifyTarget] = useState(null);       // {field, label, time}
 
+  // Auth listener
   useEffect(() => {
     const auth = getAuth();
     const unsub = onAuthStateChanged(auth, (u) => setUser(u || null));
     return () => unsub();
   }, []);
 
+  // Load profile data
   useEffect(() => {
     const fetchUser = async () => {
       const uid = isMyProfile ? user?.uid : userId;
@@ -147,33 +353,77 @@ export default function Profile({ isMyProfile }) {
       const snap = await getDoc(doc(db, 'users', uid));
       if (snap.exists()) {
         const d = snap.data();
+        // Block scouts from landing on /profile (Fix 5 from previous session)
         if (isMyProfile && (d.type === 'Scout' || d.type === 'Coach')) {
           navigate('/');
           return;
         }
+        // Bug A8 — public viewing of a non-athlete profile gets bounced home
+        if (!isMyProfile && d.type && d.type !== 'Athlete') {
+          setProfileMissing(true);
+          return;
+        }
         setFormData({
-          ...defaultForm,
-          ...Object.fromEntries(Object.keys(defaultForm).map((k) => [k, d[k] ?? defaultForm[k]])),
+          ...DEFAULT_FORM,
+          ...Object.fromEntries(Object.keys(DEFAULT_FORM).map((k) => [k, d[k] ?? DEFAULT_FORM[k]])),
         });
       } else if (isMyProfile && user) {
         setFormData((prev) => ({ ...prev, email: user.email || '', name: user.displayName || '' }));
+      } else if (!isMyProfile) {
+        setProfileMissing(true);
       }
     };
     if ((isMyProfile && user) || (!isMyProfile && userId)) fetchUser();
-  }, [user, userId, isMyProfile]);
+  }, [user, userId, isMyProfile, navigate]);
+
+  // ── Derived values (always called — Rules of Hooks compliant) ──────────────
+
+  const isUnderserved   = useMemo(() => UNDERSERVED_STATES.has(formData.state), [formData.state]);
+  const enteredTimes    = useMemo(() => SWIM_EVENTS.filter((e) => formData[e.field]?.trim()), [formData]);
+  const primaryEventObj = useMemo(() => SWIM_EVENTS.find((e) => e.label === formData.primaryEvent), [formData.primaryEvent]);
+  const primaryBestTime = primaryEventObj ? formData[primaryEventObj.field] : null;
+
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  // Fix 1: validate mandatory fields before save
+  const validateForSave = useCallback(() => {
+    const errors = [];
+    if (!formData.name?.trim())        errors.push('Name is required.');
+    if (!formData.state)               errors.push('State is required.');
+    if (!formData.primaryEvent)        errors.push('Primary event is required.');
+    return errors;
+  }, [formData]);
 
   const saveProfile = async () => {
     if (!user?.uid) return;
-    await setDoc(doc(db, 'users', user.uid), { ...formData, email: user.email }, { merge: true });
+    const errors = validateForSave();
+    if (errors.length) {
+      setSaveErrors(errors);
+      return;
+    }
+    setSaveErrors([]);
+    // Bug A3: never write a non-Athlete type from this form
+    const payload = { ...formData, type: 'Athlete', email: user.email };
+    await setDoc(doc(db, 'users', user.uid), payload, { merge: true });
     setEditing(false);
   };
 
-  const handleImageChange = (e) => {
+  // Bug A4: upload profile pic to Firebase Storage instead of stuffing base64
+  // into Firestore. Falls back to a local preview while upload is in flight.
+  const handleImageChange = async (e) => {
     const file = e.target.files[0];
-    if (!file) return;
+    if (!file || !user?.uid) return;
     const reader = new FileReader();
-    reader.onloadend = () => setFormData({ ...formData, profile_pic: reader.result });
+    reader.onloadend = () => setFormData((prev) => ({ ...prev, profile_pic: reader.result }));
     reader.readAsDataURL(file);
+    try {
+      const fileRef = ref(storage, `users/${user.uid}/profile/${file.name}`);
+      await uploadBytes(fileRef, file);
+      const url = await getDownloadURL(fileRef);
+      setFormData((prev) => ({ ...prev, profile_pic: url }));
+    } catch (err) {
+      console.error('Profile picture upload failed', err);
+    }
   };
 
   const handleMediaUpload = (e, type) => {
@@ -221,23 +471,28 @@ export default function Profile({ isMyProfile }) {
   const setVerification = (field, status, meetName = '') => {
     setFormData((prev) => ({
       ...prev,
-      verifications: {
-        ...prev.verifications,
-        [field]: { status, meetName },
-      },
+      verifications: { ...prev.verifications, [field]: { status, meetName } },
     }));
   };
 
-  const isUnderserved = UNDERSERVED_STATES.has(formData.state);
+  // ── Early returns ──────────────────────────────────────────────────────────
 
-  // Times that have a value entered
-  const enteredTimes = SWIM_EVENTS.filter((e) => formData[e.field]?.trim());
+  if (profileMissing) {
+    return (
+      <div className="flex flex-col min-h-screen bg-[#F0F7FF]">
+        <Header />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <Waves size={48} className="text-[#0B2E4E] mx-auto mb-4" />
+            <p className="text-gray-600">This athlete profile does not exist.</p>
+            <button onClick={() => navigate('/')} className="mt-4 px-6 py-2 bg-[#0B2E4E] text-white rounded-lg font-medium">Go Home</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
-  // Primary event field
-  const primaryEventObj = SWIM_EVENTS.find((e) => e.label === formData.primaryEvent);
-  const primaryBestTime = primaryEventObj ? formData[primaryEventObj.field] : null;
-
-  if (!user) {
+  if (!user && isMyProfile) {
     return (
       <div className="flex flex-col min-h-screen bg-[#F0F7FF]">
         <Header />
@@ -252,36 +507,54 @@ export default function Profile({ isMyProfile }) {
     );
   }
 
+  // ── Render ─────────────────────────────────────────────────────────────────
+
   const inputCls = (disabled) =>
     `w-full p-3 rounded-lg border text-sm transition-all focus:outline-none ${
-      disabled
-        ? 'border-transparent bg-transparent text-gray-800 cursor-default'
-        : 'border-gray-200 bg-white focus:ring-2 focus:ring-[#1565C0] focus:border-[#1565C0]'
+      disabled ? 'border-transparent bg-transparent text-gray-800 cursor-default'
+               : 'border-gray-200 bg-white focus:ring-2 focus:ring-[#1565C0] focus:border-[#1565C0]'
     }`;
 
   const selectCls = (disabled) =>
     `w-full p-3 rounded-lg border text-sm transition-all focus:outline-none ${
-      disabled
-        ? 'border-transparent bg-transparent text-gray-800 cursor-default appearance-none'
-        : 'border-gray-200 bg-white focus:ring-2 focus:ring-[#1565C0]'
+      disabled ? 'border-transparent bg-transparent text-gray-800 cursor-default appearance-none'
+               : 'border-gray-200 bg-white focus:ring-2 focus:ring-[#1565C0]'
     }`;
+
+  // Display name — Fix 1 / Bug A1. We no longer fall back to "Unnamed Athlete";
+  // if the form has no name, the profile blocks save and the UI prompts the
+  // user to complete it.
+  const displayName = formData.name?.trim() || (isMyProfile ? 'Your profile is incomplete' : 'Athlete');
 
   return (
     <div className="flex flex-col min-h-screen bg-[#F0F7FF]">
       <Header />
       <div className="container mx-auto max-w-4xl px-4 py-8 space-y-6">
 
-        {/* ── Profile Header Card ─────────────────────────────── */}
+        {/* ── Validation banner (Fix 1) ──────────────────────────────────── */}
+        {isMyProfile && editing && saveErrors.length > 0 && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+            <div className="flex items-start gap-2">
+              <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-red-700">Please complete required fields before saving:</p>
+                <ul className="mt-1 text-xs text-red-700 list-disc list-inside">
+                  {saveErrors.map((err) => <li key={err}>{err}</li>)}
+                </ul>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Header card ──────────────────────────────────────────────── */}
         <div className="bg-white rounded-2xl shadow-sm overflow-hidden border border-blue-100">
-          {/* Banner */}
           <div className="h-28 bg-gradient-to-r from-[#0B2E4E] via-[#1565C0] to-[#0B2E4E]" />
           <div className="px-6 pb-6">
             <div className="flex flex-col md:flex-row md:items-end gap-4 -mt-12">
-              {/* Avatar */}
               <div className="relative shrink-0">
                 <Avatar className="w-24 h-24 border-4 border-white shadow-lg rounded-full">
                   <AvatarImage src={formData.profile_pic || 'https://www.shutterstock.com/image-vector/vector-flat-illustration-grayscale-avatar-600nw-2281862025.jpg'} alt="profile" />
-                  <AvatarFallback className="bg-[#0B2E4E] text-white text-2xl">{formData.name?.[0]}</AvatarFallback>
+                  <AvatarFallback className="bg-[#0B2E4E] text-white text-2xl">{formData.name?.[0] || '?'}</AvatarFallback>
                 </Avatar>
                 {isMyProfile && (
                   <label className="absolute bottom-0 right-0 bg-amber-400 text-[#0B2E4E] rounded-full p-1.5 cursor-pointer shadow">
@@ -291,12 +564,13 @@ export default function Profile({ isMyProfile }) {
                 )}
               </div>
 
-              {/* Info */}
               <div className="flex-1 min-w-0 mt-4 md:mt-0">
                 <div className="flex flex-wrap items-center gap-2 mb-1">
-                  <h2 className="text-2xl font-extrabold text-[#0B2E4E]">{formData.name || 'Unnamed Athlete'}</h2>
-                  <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${formData.type === 'Athlete' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
-                    {formData.type || 'Athlete'}
+                  <h2 className={`text-2xl font-extrabold ${formData.name?.trim() ? 'text-[#0B2E4E]' : 'text-gray-400 italic'}`}>
+                    {displayName}
+                  </h2>
+                  <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-700">
+                    Athlete
                   </span>
                   {isUnderserved && (
                     <span className="inline-flex items-center gap-1 bg-orange-100 text-orange-700 text-xs font-bold px-2.5 py-0.5 rounded-full">
@@ -322,7 +596,6 @@ export default function Profile({ isMyProfile }) {
                 )}
               </div>
 
-              {/* Actions */}
               <div className="flex gap-2 shrink-0">
                 {isMyProfile && (
                   <Button
@@ -332,16 +605,8 @@ export default function Profile({ isMyProfile }) {
                     {editing ? 'Save Profile' : 'Edit Profile'}
                   </Button>
                 )}
-                {!isMyProfile && (
-                  <Button
-                    onClick={() => navigate(`/chat/${userId}`)}
-                    className="bg-amber-400 text-[#0B2E4E] hover:bg-amber-300 font-bold text-sm"
-                  >
-                    Message
-                  </Button>
-                )}
                 {editing && (
-                  <Button onClick={() => setEditing(false)} variant="outline" className="text-sm">
+                  <Button onClick={() => { setEditing(false); setSaveErrors([]); }} variant="outline" className="text-sm">
                     Cancel
                   </Button>
                 )}
@@ -350,11 +615,18 @@ export default function Profile({ isMyProfile }) {
           </div>
         </div>
 
-        {/* ── Bio & Identity Fields ──────────────────────────── */}
+        {/* ── Profile strength + scout activity (own profile only) ──────── */}
+        {isMyProfile && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <CompletionBar formData={formData} />
+            <ScoutActivityCard formData={formData} />
+          </div>
+        )}
+
+        {/* ── Identity fields ──────────────────────────────────────────── */}
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Profile Details</h3>
 
-          {/* Physical stats row */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
             {[
               { label: 'Age', field: 'age', placeholder: 'e.g. 18' },
@@ -368,7 +640,7 @@ export default function Profile({ isMyProfile }) {
                   <input
                     type="text"
                     value={formData[field]}
-                    onChange={(e) => setFormData({ ...formData, [field]: e.target.value })}
+                    onChange={(e) => setFormData((prev) => ({ ...prev, [field]: e.target.value }))}
                     className="w-full text-center text-lg font-bold text-[#0B2E4E] focus:outline-none bg-transparent"
                     placeholder={placeholder}
                   />
@@ -380,86 +652,73 @@ export default function Profile({ isMyProfile }) {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Gender</label>
-              <select disabled={!editing} value={formData.gender} onChange={(e) => setFormData({ ...formData, gender: e.target.value })} className={selectCls(!editing)}>
+            <Field label="Full Name *" required>
+              <input
+                disabled={!editing} type="text" value={formData.name}
+                onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
+                className={inputCls(!editing)} placeholder="Your full name"
+              />
+            </Field>
+            <Field label="Gender">
+              <select disabled={!editing} value={formData.gender} onChange={(e) => setFormData((prev) => ({ ...prev, gender: e.target.value }))} className={selectCls(!editing)}>
                 <option value="">Select gender</option>
                 <option>Male</option>
                 <option>Female</option>
                 <option>Other</option>
               </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Account Type</label>
-              <select disabled={!editing} value={formData.type} onChange={(e) => setFormData({ ...formData, type: e.target.value })} className={selectCls(!editing)}>
-                <option value="">Select type</option>
-                <option>Athlete</option>
-                <option>Scout</option>
-                <option>Coach</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">State / Region</label>
-              <select disabled={!editing} value={formData.state} onChange={(e) => setFormData({ ...formData, state: e.target.value })} className={selectCls(!editing)}>
+            </Field>
+            <Field label="State / Region *" required>
+              <select disabled={!editing} value={formData.state} onChange={(e) => setFormData((prev) => ({ ...prev, state: e.target.value }))} className={selectCls(!editing)}>
                 <option value="">Select state</option>
                 {INDIAN_STATES.map((s) => <option key={s}>{s}</option>)}
               </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">City</label>
-              <input disabled={!editing} type="text" value={formData.city} onChange={(e) => setFormData({ ...formData, city: e.target.value })} className={inputCls(!editing)} placeholder="e.g. Pune" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Club Name</label>
-              <input disabled={!editing} type="text" value={formData.clubName} onChange={(e) => setFormData({ ...formData, clubName: e.target.value })} className={inputCls(!editing)} placeholder="e.g. Aqua Tigers Swimming Club" />
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Coach Name</label>
-              <input disabled={!editing} type="text" value={formData.coachName} onChange={(e) => setFormData({ ...formData, coachName: e.target.value })} className={inputCls(!editing)} placeholder="Coach's full name" />
-            </div>
+            </Field>
+            <Field label="City">
+              <input disabled={!editing} type="text" value={formData.city} onChange={(e) => setFormData((prev) => ({ ...prev, city: e.target.value }))} className={inputCls(!editing)} placeholder="e.g. Pune" />
+            </Field>
+            <Field label="Club Name">
+              <input disabled={!editing} type="text" value={formData.clubName} onChange={(e) => setFormData((prev) => ({ ...prev, clubName: e.target.value }))} className={inputCls(!editing)} placeholder="e.g. Aqua Tigers Swimming Club" />
+            </Field>
+            <Field label="Coach Name">
+              <input disabled={!editing} type="text" value={formData.coachName} onChange={(e) => setFormData((prev) => ({ ...prev, coachName: e.target.value }))} className={inputCls(!editing)} placeholder="Coach's full name" />
+            </Field>
             <div className="md:col-span-2">
-              <label className="block text-xs font-medium text-gray-500 mb-1">
-                Contact Email <span className="text-amber-600 font-normal">(visible to scouts)</span>
-              </label>
-              <input
-                disabled={!editing}
-                type="email"
-                value={formData.contactEmail}
-                onChange={(e) => setFormData({ ...formData, contactEmail: e.target.value })}
-                className={inputCls(!editing)}
-                placeholder="contact@example.com — the email scouts should use to reach you or your coach"
-              />
+              <Field label={<>Contact Email <span className="text-amber-600 font-normal">(visible to scouts)</span></>}>
+                <input
+                  disabled={!editing} type="email" value={formData.contactEmail}
+                  onChange={(e) => setFormData((prev) => ({ ...prev, contactEmail: e.target.value }))}
+                  className={inputCls(!editing)}
+                  placeholder="contact@example.com — the email scouts should use to reach you"
+                />
+              </Field>
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Bio</label>
-            <textarea disabled={!editing} value={formData.bio} onChange={(e) => setFormData({ ...formData, bio: e.target.value })} className={`${inputCls(!editing)} resize-none`} rows={2} placeholder="Short bio — your goals, background, current training focus..." />
-          </div>
+          <Field label="Bio">
+            <textarea disabled={!editing} value={formData.bio} onChange={(e) => setFormData((prev) => ({ ...prev, bio: e.target.value }))} className={`${inputCls(!editing)} resize-none`} rows={2} placeholder="Short bio — your goals, background, current training focus..." />
+          </Field>
         </div>
 
-        {/* ── Event Specialization ───────────────────────────── */}
+        {/* ── Event Specialization ─────────────────────────────────────── */}
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Event Specialization</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Primary Event</label>
-              <select disabled={!editing} value={formData.primaryEvent} onChange={(e) => setFormData({ ...formData, primaryEvent: e.target.value })} className={selectCls(!editing)}>
+            <Field label="Primary Event *" required>
+              <select disabled={!editing} value={formData.primaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, primaryEvent: e.target.value }))} className={selectCls(!editing)}>
                 <option value="">Select primary event</option>
                 {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
               </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-500 mb-1">Secondary Event</label>
-              <select disabled={!editing} value={formData.secondaryEvent} onChange={(e) => setFormData({ ...formData, secondaryEvent: e.target.value })} className={selectCls(!editing)}>
+            </Field>
+            <Field label="Secondary Event">
+              <select disabled={!editing} value={formData.secondaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, secondaryEvent: e.target.value }))} className={selectCls(!editing)}>
                 <option value="">Select secondary event</option>
                 {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
               </select>
-            </div>
+            </Field>
           </div>
         </div>
 
-        {/* ── Benchmark Panel ────────────────────────────────── */}
+        {/* ── Benchmark Panel (Fix 3 — public visible) ─────────────────── */}
         {formData.primaryEvent && primaryBestTime && (
           <BenchmarkPanel
             event={formData.primaryEvent}
@@ -468,11 +727,11 @@ export default function Profile({ isMyProfile }) {
           />
         )}
 
-        {/* ── Verified Times ─────────────────────────────────── */}
+        {/* ── Swim Times ───────────────────────────────────────────────── */}
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Swim Times</h3>
 
-          {/* Time entry grid when editing */}
+          {/* Smart time entry grid */}
           {editing && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
               {SWIM_EVENTS.map(({ label, field }) => {
@@ -480,18 +739,18 @@ export default function Profile({ isMyProfile }) {
                 return (
                   <div key={field} className="border border-gray-100 rounded-xl p-3">
                     <div className="text-xs font-medium text-gray-600 mb-2">{label}</div>
-                    <input
-                      type="text"
+                    <SmartTimeInput
                       value={formData[field]}
-                      onChange={(e) => setFormData({ ...formData, [field]: e.target.value })}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#1565C0] mb-2"
-                      placeholder="e.g. 53.42 or 1:54.32"
+                      onChange={(v) => setFormData((prev) => ({ ...prev, [field]: v }))}
+                      event={label}
+                      gender={formData.gender}
+                      className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#1565C0] mb-1"
                     />
                     {formData[field] && (
-                      <div className="space-y-1">
+                      <div className="space-y-1 mt-2">
                         <select
                           value={verif.status || ''}
-                          onChange={(e) => setVerification(field, e.target.value)}
+                          onChange={(e) => setVerification(field, e.target.value, verif.meetName)}
                           className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#1565C0]"
                         >
                           <option value="">Unverified</option>
@@ -515,7 +774,7 @@ export default function Profile({ isMyProfile }) {
             </div>
           )}
 
-          {/* Display table */}
+          {/* Times table */}
           {enteredTimes.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -525,21 +784,35 @@ export default function Profile({ isMyProfile }) {
                     <th className="pb-2 pr-4">Best Time</th>
                     <th className="pb-2 pr-4">Verification</th>
                     <th className="pb-2">Source</th>
+                    {isMyProfile && <th className="pb-2 text-right" />}
                   </tr>
                 </thead>
                 <tbody>
                   {enteredTimes.map(({ label, field }) => {
                     const verif = formData.verifications?.[field] || {};
                     const isPrimary = label === formData.primaryEvent;
+                    const isVerified = verif.status === 'meet' || verif.status === 'coach';
                     return (
                       <tr key={field} className={`border-b border-gray-50 ${isPrimary ? 'bg-blue-50' : ''}`}>
                         <td className="py-2.5 pr-4 font-medium text-[#0B2E4E]">
                           {label}
                           {isPrimary && <span className="ml-2 text-xs text-blue-500 font-normal">Primary</span>}
                         </td>
-                        <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{formData[field]}</td>
+                        <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{formatTime(formData[field])}</td>
                         <td className="py-2.5 pr-4"><VerificationBadge status={verif.status} /></td>
                         <td className="py-2.5 text-gray-400 text-xs">{verif.meetName || '—'}</td>
+                        {isMyProfile && (
+                          <td className="py-2.5 text-right">
+                            {!isVerified && (
+                              <button
+                                onClick={() => setVerifyTarget({ field, label, time: formData[field] })}
+                                className="text-xs font-medium text-[#1565C0] hover:text-[#0B2E4E] inline-flex items-center gap-1"
+                              >
+                                <MessageSquare size={11} /> Request verification
+                              </button>
+                            )}
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
@@ -553,7 +826,7 @@ export default function Profile({ isMyProfile }) {
           )}
         </div>
 
-        {/* ── Competition History ─────────────────────────────── */}
+        {/* ── Competition History ──────────────────────────────────────── */}
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Competition History</h3>
 
@@ -568,7 +841,7 @@ export default function Profile({ isMyProfile }) {
                   {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
                 </select>
                 <input type="text" placeholder="Placing (e.g. 2nd)" value={newComp.placing} onChange={(e) => setNewComp({ ...newComp, placing: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]" />
-                <input type="text" placeholder="Time *" value={newComp.time} onChange={(e) => setNewComp({ ...newComp, time: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]" />
+                <input type="text" placeholder="Time * (e.g. 1:54.32)" value={newComp.time} onChange={(e) => setNewComp({ ...newComp, time: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]" />
                 <button onClick={addCompetition} className="flex items-center justify-center gap-1 bg-[#0B2E4E] text-white rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-[#0d3a5c]">
                   <Plus size={12} /> Add
                 </button>
@@ -590,26 +863,29 @@ export default function Profile({ isMyProfile }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {formData.competitionHistory.map((c) => (
-                    <tr key={c.id} className="border-b border-gray-50">
-                      <td className="py-2.5 pr-4 font-medium text-gray-800">{c.meetName}</td>
-                      <td className="py-2.5 pr-4 text-gray-500">{c.date}</td>
-                      <td className="py-2.5 pr-4 text-gray-600">{c.event}</td>
-                      <td className="py-2.5 pr-4">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${c.placing === '1st' ? 'bg-amber-100 text-amber-700' : c.placing === '2nd' ? 'bg-gray-100 text-gray-600' : 'bg-orange-100 text-orange-600'}`}>
-                          {c.placing || '—'}
-                        </span>
-                      </td>
-                      <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{c.time}</td>
-                      {editing && (
-                        <td className="py-2.5">
-                          <button onClick={() => removeCompetition(c.id)} className="text-gray-400 hover:text-red-500 transition-colors">
-                            <X size={14} />
-                          </button>
+                  {formData.competitionHistory.map((c) => {
+                    const placeColor = PLACE_COLORS[c.placing] || 'bg-orange-100 text-orange-600';
+                    return (
+                      <tr key={c.id} className="border-b border-gray-50">
+                        <td className="py-2.5 pr-4 font-medium text-gray-800">{c.meetName}</td>
+                        <td className="py-2.5 pr-4 text-gray-500">{c.date}</td>
+                        <td className="py-2.5 pr-4 text-gray-600">{c.event}</td>
+                        <td className="py-2.5 pr-4">
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${placeColor}`}>
+                            {c.placing || '—'}
+                          </span>
                         </td>
-                      )}
-                    </tr>
-                  ))}
+                        <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{formatTime(c.time)}</td>
+                        {editing && (
+                          <td className="py-2.5">
+                            <button onClick={() => removeCompetition(c.id)} className="text-gray-400 hover:text-red-500 transition-colors">
+                              <X size={14} />
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -620,7 +896,7 @@ export default function Profile({ isMyProfile }) {
           )}
         </div>
 
-        {/* ── Media ──────────────────────────────────────────── */}
+        {/* ── Media ─────────────────────────────────────────────────────── */}
         {(formData.videos?.length > 0 || formData.photos?.length > 0 || (isMyProfile && editing)) && (
           <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
             <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Video Highlights & Photos</h3>
@@ -642,7 +918,7 @@ export default function Profile({ isMyProfile }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {formData.videos?.map((item, idx) => (
                 <div key={idx}>
-                  <video src={item.url} controls className="w-full rounded-xl border shadow-sm" />
+                  <video src={item.url} controls className="w-full max-h-72 rounded-xl border shadow-sm" />
                   {item.description && <p className="text-xs text-gray-500 mt-1">{item.description}</p>}
                 </div>
               ))}
@@ -683,6 +959,40 @@ export default function Profile({ isMyProfile }) {
           </div>
         </div>
       )}
+
+      {/* Coach verification request modal (Fix 10) */}
+      <RequestVerifyModal
+        open={!!verifyTarget}
+        onClose={() => setVerifyTarget(null)}
+        athleteId={user?.uid}
+        athleteName={formData.name || 'An athlete'}
+        field={verifyTarget?.field}
+        label={verifyTarget?.label}
+        time={verifyTarget?.time}
+      />
     </div>
   );
+}
+
+// ── Small layout helper ────────────────────────────────────────────────────
+
+function Field({ label, required, children }) {
+  return (
+    <div>
+      <label className={`block text-xs font-medium mb-1 ${required ? 'text-[#0B2E4E]' : 'text-gray-500'}`}>
+        {label}
+      </label>
+      {children}
+    </div>
+  );
+}
+
+// ── ISO week number — used to roll over the "this week" view counter ───────
+
+function isoWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
 }

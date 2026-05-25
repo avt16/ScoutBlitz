@@ -201,13 +201,14 @@ function SignUp({ setUserType }) {
             Join the platform connecting Indian swimming talent with the world.
           </p>
 
-          {/* Role selection */}
+          {/* Role selection — Scout and Coach are now distinct (Bug A5) */}
           <div className="mb-5">
             <label className="block text-sm font-medium text-gray-700 mb-2">I am joining as</label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-2">
               {[
-                { value: 'Athlete', emoji: '🏊', title: 'Swimmer / Athlete', sub: 'Build your profile, get discovered' },
-                { value: 'Scout',   emoji: '🔍', title: 'Scout / Coach',     sub: 'Discover and recruit talent' },
+                { value: 'Athlete', emoji: '🏊', title: 'Swimmer',  sub: 'Get discovered' },
+                { value: 'Scout',   emoji: '🔍', title: 'Scout',    sub: 'Recruit talent' },
+                { value: 'Coach',   emoji: '🎯', title: 'Coach',    sub: 'Find athletes to train' },
               ].map(({ value, emoji, title, sub }) => (
                 <button
                   key={value}

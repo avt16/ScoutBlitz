@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { ShieldCheck, Shield, Trophy, Eye, Lightbulb, TrendingUp, Waves, ArrowRight, AlertCircle } from 'lucide-react';
 import {
   SWIM_EVENTS, SWIM_EVENT_FIELDS, BENCHMARKS,
-  parseTime, fmtSecs, getVerificationLevel,
+  parseTime, fmtSecs, formatTime, getVerificationLevel,
 } from '../data/swimData';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -230,7 +230,7 @@ function TimeEntry({ entry, onUpdate }) {
               {entry.verifStatus === 'meet' ? 'Meet Verified' : entry.verifStatus === 'coach' ? 'Coach Verified' : 'Unverified'}
             </span>
           </div>
-          <div className="text-2xl font-extrabold text-[#0B2E4E] mt-1">{entry.time}</div>
+          <div className="text-2xl font-extrabold text-[#0B2E4E] mt-1">{formatTime(entry.time)}</div>
           {entry.meetName && <div className="text-xs text-gray-400 mt-0.5">Source: {entry.meetName}</div>}
         </div>
       </div>
@@ -263,7 +263,7 @@ function BenchmarkEntry({ entry, onUpdate }) {
             </span>
           </div>
           <p className="text-sm text-gray-600 mt-1">
-            You cleared the <strong>{entry.tier}</strong> standard in <strong>{entry.event}</strong> with <strong>{entry.time}</strong>
+            You cleared the <strong>{entry.tier}</strong> standard in <strong>{entry.event}</strong> with <strong>{formatTime(entry.time)}</strong>
           </p>
           <BenchmarkMiniPanel event={entry.event} time={entry.time} tierKey={entry.tierKey} gender={entry.gender} />
         </div>
@@ -303,7 +303,7 @@ function CompetitionEntry({ entry, onUpdate }) {
           <p className="text-sm text-gray-600 mt-1">
             {entry.placing ? `You placed ${entry.placing} at ` : 'You competed at '}
             <strong>{entry.meetName}</strong> in <strong>{entry.event}</strong>
-            {entry.time && <> — <strong>{entry.time}</strong></>}
+            {entry.time && <> — <strong>{formatTime(entry.time)}</strong></>}
           </p>
         </div>
       </div>
@@ -386,6 +386,17 @@ export default function ProgressFeed() {
     () => profile ? SWIM_EVENTS.filter((e) => profile[e.field]?.trim()).length : 0,
     [profile],
   );
+  // Compute "viewed this week" from the event log — accurate, no rollover needed
+  const viewsThisWeek = useMemo(() => {
+    if (!profile?.profileViewEvents?.length) return 0;
+    const now = new Date();
+    const wk = isoWeekNum(now);
+    const yr = now.getFullYear();
+    return profile.profileViewEvents.filter((ts) => {
+      const d = new Date(ts);
+      return isoWeekNum(d) === wk && d.getFullYear() === yr;
+    }).length;
+  }, [profile]);
 
   if (loading) {
     return (
@@ -452,6 +463,23 @@ export default function ProgressFeed() {
             {profile.profileViewEvents?.length ? ` · ${profile.profileViewEvents.length} scout view${profile.profileViewEvents.length !== 1 ? 's' : ''}` : ''}
           </p>
         </div>
+
+        {/* Scout activity callout (Fix 4) */}
+        {viewsThisWeek > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-4 flex items-start gap-3">
+            <div className="bg-amber-400 rounded-lg p-2 shrink-0">
+              <TrendingUp size={16} className="text-[#0B2E4E]" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-[#0B2E4E]">
+                Your profile was viewed {viewsThisWeek} time{viewsThisWeek === 1 ? '' : 's'} this week
+              </p>
+              <p className="text-xs text-amber-700 mt-0.5">
+                Scouts are noticing — keep your times verified to stay visible.
+              </p>
+            </div>
+          </div>
+        )}
 
         {/* Profile completion bar */}
         <div className="bg-white border border-blue-100 rounded-2xl p-5 mb-4 shadow-sm">
@@ -523,4 +551,13 @@ export default function ProgressFeed() {
       </div>
     </div>
   );
+}
+
+// ── ISO week helper (used for "viewed this week" counter) ─────────────────
+function isoWeekNum(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
 }
