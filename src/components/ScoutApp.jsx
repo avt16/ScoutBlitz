@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db } from './FireBase';
 import {
-  collection, getDocs, doc, getDoc, setDoc, updateDoc, arrayUnion,
+  collection, getDocs, doc, getDoc, setDoc, updateDoc, arrayUnion, query, where,
 } from 'firebase/firestore';
 import { signOut, getAuth } from 'firebase/auth';
 import {
@@ -154,7 +154,7 @@ function FilterSidebar({
         </select>
       </div>
 
-      {/* FIX 2: Time range — only active when an event is selected */}
+      {/* Time range — only active when an event is selected */}
       <div>
         <label className="block text-xs font-medium text-gray-400 mb-1.5">Time Range</label>
         <div className="flex gap-2 items-center">
@@ -386,18 +386,23 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
   const verif = getVerificationLevel(athlete);
   const underserved = UNDERSERVED_STATES.has(athlete.state);
 
-  // Collect all events that have a time
-  const eventTimes = SWIM_EVENTS.map(({ label, field }) => {
-    const timeStr = athlete[field];
-    if (!timeStr || !timeStr.trim()) return null;
-    const eventVerif = athlete.verifications?.[field]?.status;
-    return { label, field, timeStr, eventVerif };
-  }).filter(Boolean);
+  const eventTimes = useMemo(() =>
+    SWIM_EVENTS.map(({ label, field }) => {
+      const timeStr = athlete[field];
+      if (!timeStr || !timeStr.trim()) return null;
+      return { label, field, timeStr, eventVerif: athlete.verifications?.[field]?.status };
+    }).filter(Boolean),
+  [athlete]);
 
-  // Primary event benchmarks
   const genderKey = athlete.gender?.toLowerCase() === 'female' ? 'female' : 'male';
-  const primaryBm = athlete.primaryEvent ? BENCHMARKS[athlete.primaryEvent]?.[genderKey] : null;
-  const primaryTimeSecs = parseTime(getBestTimeForEvent(athlete, athlete.primaryEvent));
+  const primaryBm = useMemo(
+    () => (athlete.primaryEvent ? BENCHMARKS[athlete.primaryEvent]?.[genderKey] : null),
+    [athlete.primaryEvent, genderKey],
+  );
+  const primaryTimeSecs = useMemo(
+    () => parseTime(getBestTimeForEvent(athlete, athlete.primaryEvent)),
+    [athlete],
+  );
 
   return (
     <>
@@ -756,7 +761,7 @@ function ShortlistsScreen({
               })}
             </div>
 
-            {/* FIX 7: Contact info table — shows in print export */}
+            {/* Contact info table — shows in print export */}
             <div className="mb-8">
               <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-3">
                 Contact Information
@@ -838,7 +843,7 @@ function ShortlistsScreen({
   );
 }
 
-// ─── Smart empty state (FIX 8) ───────────────────────────────────────────────
+// ─── Smart empty state ───────────────────────────────────────────────────────
 
 function SmartEmptyState({
   filterVerifiedOnly, filterEvent, filterTimeMin, filterTimeMax, filterState,
@@ -923,30 +928,19 @@ export default function ScoutApp({ uid }) {
   // ── Load ────────────────────────────────────────────────────────────────────
   useEffect(() => {
     const load = async () => {
-      if (uid) {
-        // Scout profile name
-        const scoutDoc = await getDoc(doc(db, 'users', uid));
-        if (scoutDoc.exists()) setScoutName(scoutDoc.data().name || 'Scout');
+      const athleteQuery = query(collection(db, 'users'), where('type', '==', 'Athlete'));
+      const [scoutDoc, sdDoc, notesDoc, snap] = await Promise.all([
+        uid ? getDoc(doc(db, 'users', uid))      : Promise.resolve(null),
+        uid ? getDoc(doc(db, 'scoutData', uid))  : Promise.resolve(null),
+        uid ? getDoc(doc(db, 'scoutNotes', uid)) : Promise.resolve(null),
+        getDocs(athleteQuery),
+      ]);
 
-        // Shortlists
-        const sdDoc = await getDoc(doc(db, 'scoutData', uid));
-        if (sdDoc.exists() && sdDoc.data().shortlists) {
-          setShortlists(sdDoc.data().shortlists);
-        }
+      if (scoutDoc?.exists()) setScoutName(scoutDoc.data().name || 'Scout');
+      if (sdDoc?.exists() && sdDoc.data().shortlists) setShortlists(sdDoc.data().shortlists);
+      if (notesDoc?.exists() && notesDoc.data().athletes) setNotes(notesDoc.data().athletes);
 
-        // Notes
-        const notesDoc = await getDoc(doc(db, 'scoutNotes', uid));
-        if (notesDoc.exists() && notesDoc.data().athletes) {
-          setNotes(notesDoc.data().athletes);
-        }
-      }
-
-      // All athletes
-      const snap = await getDocs(collection(db, 'users'));
-      const all = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .filter((u) => u.type === 'Athlete');
-      setAthletes(all);
+      setAthletes(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setLoading(false);
     };
     load();
@@ -955,11 +949,9 @@ export default function ScoutApp({ uid }) {
   // ── Filtering ───────────────────────────────────────────────────────────────
   const filtered = athletes.filter((a) => {
     if (search && !a.name?.toLowerCase().includes(search.toLowerCase())) return false;
-    // FIX 1: check whether athlete has a non-empty time in the selected event's field
     if (filterEvent) {
       const eventField = SWIM_EVENT_FIELDS[filterEvent];
       if (!eventField || !a[eventField] || !a[eventField].trim()) return false;
-      // FIX 2: time range filter (only when event is also selected)
       const atSecs  = parseTime(a[eventField]);
       const minSecs = parseTime(filterTimeMin);
       const maxSecs = parseTime(filterTimeMax);

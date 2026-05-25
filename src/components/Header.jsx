@@ -2,32 +2,17 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { User, Search, LogOut, Waves, TrendingUp } from 'lucide-react';
 import { collection, query, getDocs, where } from 'firebase/firestore';
-import { getAuth, onAuthStateChanged, signOut } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { getAuth, signOut } from 'firebase/auth';
 import { db } from './FireBase';
+import { useUserContext } from '../context/UserContext';
 
 function Header() {
-  const [search,          setSearch]          = useState('');
-  const [showResults,     setShowResults]     = useState(false);
-  const [searchResults,   setSearchResults]   = useState([]);
-  const [userType,        setUserType]        = useState(null);
+  const [search,        setSearch]        = useState('');
+  const [showResults,   setShowResults]   = useState(false);
+  const [searchResults, setSearchResults] = useState([]);
+  const { userType } = useUserContext();
   const navigate = useNavigate();
   const auth     = getAuth();
-
-  // Detect current user type (Athlete / Scout / null)
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        try {
-          const snap = await getDoc(doc(db, 'users', user.uid));
-          if (snap.exists()) setUserType(snap.data().type || null);
-        } catch (_) {}
-      } else {
-        setUserType(null);
-      }
-    });
-    return unsub;
-  }, []);
 
   // Debounced swimmer search
   useEffect(() => {

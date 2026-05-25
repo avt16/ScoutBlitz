@@ -23,11 +23,8 @@ function Login({ setUserType }) {
       const snap = await getDoc(doc(db, 'users', uid));
       const type = snap.exists() ? snap.data().type : 'Athlete';
       if (setUserType) setUserType(type);
-      if (type === 'Scout' || type === 'Coach') {
-        // App.jsx will handle re-rendering ScoutApp once userType updates;
-        // a hard reload is the simplest way to trigger it cleanly.
-        window.location.href = '/';
-      } else {
+      // For scouts, setUserType triggers App.jsx to swap to ScoutApp — no navigation needed
+      if (type !== 'Scout' && type !== 'Coach') {
         navigate('/profile');
       }
     } catch (_) {

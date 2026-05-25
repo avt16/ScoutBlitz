@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from './FireBase';
@@ -275,8 +275,14 @@ function BenchmarkEntry({ entry, onUpdate }) {
   );
 }
 
+const PLACE_COLORS = {
+  '1st': 'bg-amber-100 text-amber-700',
+  '2nd': 'bg-gray-100 text-gray-600',
+  '3rd': 'bg-orange-100 text-orange-600',
+};
+
 function CompetitionEntry({ entry, onUpdate }) {
-  const placeColor = entry.placing === '1st' ? 'bg-amber-100 text-amber-700' : entry.placing === '2nd' ? 'bg-gray-100 text-gray-600' : 'bg-orange-100 text-orange-600';
+  const placeColor = PLACE_COLORS[entry.placing] ?? 'bg-orange-100 text-orange-600';
 
   return (
     <div className="bg-white border border-blue-100 rounded-2xl p-5 shadow-sm">
@@ -354,7 +360,6 @@ export default function ProgressFeed() {
         try {
           const snap = await getDoc(doc(db, 'users', u.uid));
           const data = snap.exists() ? snap.data() : {};
-          // FIX 5: scouts should never land here — redirect immediately
           if (data.type === 'Scout' || data.type === 'Coach') {
             navigate('/');
             return;
@@ -396,11 +401,13 @@ export default function ProgressFeed() {
     );
   }
 
-  const entries   = generateFeedEntries(profile);
-  const prompt    = computeNextPrompt(profile);
-  const enteredTimesCount = SWIM_EVENTS.filter((e) => profile[e.field]?.trim()).length;
+  const entries           = useMemo(() => generateFeedEntries(profile), [profile]);
+  const prompt            = useMemo(() => computeNextPrompt(profile),   [profile]);
+  const enteredTimesCount = useMemo(
+    () => SWIM_EVENTS.filter((e) => profile[e.field]?.trim()).length,
+    [profile],
+  );
 
-  // FIX 6: profile completion criteria
   const completionCriteria = [
     {
       label: 'Add a profile photo',
@@ -443,7 +450,7 @@ export default function ProgressFeed() {
           </p>
         </div>
 
-        {/* FIX 6: Profile completion bar */}
+        {/* Profile completion bar */}
         <div className="bg-white border border-blue-100 rounded-2xl p-5 mb-4 shadow-sm">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm font-bold text-[#0B2E4E]">Profile Strength</span>

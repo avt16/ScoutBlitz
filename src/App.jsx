@@ -11,6 +11,7 @@ import HomePage from './components/HomePage';
 import Profile from './components/Profile';
 import ProgressFeed from './components/ProgressFeed';
 import ScoutApp from './components/ScoutApp';
+import { UserContext } from './context/UserContext';
 
 // ─── Loading splash ───────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ function App() {
 
   // ── Athlete + public experience ─────────────────────────────────────────────
   return (
+    <UserContext.Provider value={{ userType, authUid }}>
     <div data-theme="athlete">
       <BrowserRouter>
         <Analytics />
@@ -73,7 +75,7 @@ function App() {
           {/* Public */}
           <Route path="/"              element={<HomePage />} />
           <Route path="/login"         element={<Login setUserType={setUserType} />} />
-          <Route path="/signup"        element={<SignUp />} />
+          <Route path="/signup"        element={<SignUp setUserType={setUserType} />} />
           <Route path="/forgotPassword" element={<ForgotPassword />} />
 
           {/* Athlete-gated */}
@@ -99,6 +101,7 @@ function App() {
         </Routes>
       </BrowserRouter>
     </div>
+    </UserContext.Provider>
   );
 }
 

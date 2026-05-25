@@ -75,7 +75,7 @@ function ScoutConfirmPanel({ onConfirm, onBack }) {
 
 // ─── SignUp ───────────────────────────────────────────────────────────────────
 
-function SignUp() {
+function SignUp({ setUserType }) {
   const [email,            setEmail]            = useState('');
   const [password,         setPassword]         = useState('');
   const [name,             setName]             = useState('');
@@ -99,9 +99,8 @@ function SignUp() {
         type,
         createdAt: serverTimestamp(),
       });
-      if (type === 'Scout' || type === 'Coach') {
-        window.location.href = '/';
-      } else {
+      if (setUserType) setUserType(type);
+      if (type !== 'Scout' && type !== 'Coach') {
         navigate('/profile');
       }
     } catch (err) {
@@ -125,7 +124,6 @@ function SignUp() {
 
   const signUpWithGoogle = async () => {
     if (type === 'Scout' || type === 'Coach') {
-      // FIX 3: show scout confirmation first, then run Google flow after confirm
       setPendingGoogleSignup(true);
       setShowScoutConfirm(true);
       return;
@@ -150,9 +148,8 @@ function SignUp() {
           createdAt: serverTimestamp(),
         });
       }
-      if (type === 'Scout' || type === 'Coach') {
-        window.location.href = '/';
-      } else {
+      if (setUserType) setUserType(type);
+      if (type !== 'Scout' && type !== 'Coach') {
         navigate('/profile');
       }
     } catch (err) {
@@ -271,7 +268,7 @@ function SignUp() {
             className="w-full bg-[#0B2E4E] text-white py-2.5 rounded-lg font-semibold hover:bg-[#0d3a5c] transition-colors mb-3 disabled:opacity-60"
             onClick={handleCreateClick}
           >
-            {loading ? 'Creating account…' : type === 'Scout' ? 'Continue →' : 'Create Account'}
+            {loading ? 'Creating account…' : (type === 'Scout' || type === 'Coach') ? 'Continue →' : 'Create Account'}
           </button>
 
           <button
