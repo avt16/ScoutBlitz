@@ -98,60 +98,73 @@ function computeNextPrompt(profile) {
 function generateFeedEntries(profile) {
   const entries = [];
 
-  // Swim time entries
+  // Swim time entries — iterate both LCM and SCM
   for (const { label, field } of SWIM_EVENTS) {
-    const time = profile[field]?.trim();
-    if (!time) continue;
+    for (const course of ['LCM', 'SCM']) {
+      const key = course === 'SCM' ? field + '_SCM' : field;
+      const time = profile[key]?.trim();
+      if (!time) continue;
 
-    const verifStatus = profile.verifications?.[field]?.status;
-    const meetName    = profile.verifications?.[field]?.meetName;
-    const gk          = profile.gender === 'Female' ? 'female' : 'male';
-    const bm          = BENCHMARKS[label]?.[gk];
-    const secs        = parseTime(time);
+      const verifStatus = profile.verifications?.[key]?.status;
+      const meetName    = profile.verifications?.[key]?.meetName;
+      const gk          = profile.gender === 'Female' ? 'female' : 'male';
+      const bm          = BENCHMARKS[label]?.[gk];   // benchmarks are LCM-based; only emit crossings for LCM
+      const secs        = parseTime(time);
 
-    // Benchmark crossing entries (highest priority)
-    if (bm && secs) {
-      for (const { key, label: bmLabel } of BENCHMARK_TIERS) {
-        if (secs <= bm[key]) {
-          entries.push({
-            id:        `bm_${field}_${key}`,
-            type:      'benchmark',
-            event:     label,
-            time,
-            tier:      bmLabel,
-            tierKey:   key,
-            gender:    profile.gender,
-            timestamp: null,
-            priority:  1,
-          });
-          break; // show only the highest achieved tier
+      // Benchmark crossing entries — only for LCM (benchmark tiers reflect LCM standards)
+      if (course === 'LCM' && bm && secs) {
+        for (const { key: bmKey, label: bmLabel } of BENCHMARK_TIERS) {
+          if (secs <= bm[bmKey]) {
+            entries.push({
+              id:        `bm_${key}_${bmKey}`,
+              type:      'benchmark',
+              event:     label,
+              course,
+              time,
+              tier:      bmLabel,
+              tierKey:   bmKey,
+              gender:    profile.gender,
+              timestamp: null,
+              priority:  1,
+            });
+            break;
+          }
         }
       }
-    }
 
-    // Time log entry
-    entries.push({
-      id:         `time_${field}`,
-      type:       'time',
-      event:      label,
-      time,
-      verifStatus: verifStatus || null,
-      meetName:   meetName || null,
-      timestamp:  null,
-      priority:   2,
-    });
+      // Time log entry — one per (event, course)
+      entries.push({
+        id:         `time_${key}`,
+        type:       'time',
+        event:      label,
+        course,
+        time,
+        verifStatus: verifStatus || null,
+        meetName:   meetName || null,
+        timestamp:  null,
+        priority:   2,
+      });
+    }
   }
 
-  // Competition history entries
+  // Competition history entries — handle v2 (multi-result) and v1 (flat)
   for (const comp of profile.competitionHistory || []) {
+    const results = Array.isArray(comp.results) && comp.results.length
+      ? comp.results
+      : (comp.event ? [{ event: comp.event, time: comp.time, placing: comp.placing }] : []);
+    // One feed entry per meet; show all results inside
     entries.push({
       id:        `comp_${comp.id}`,
       type:      'competition',
       meetName:  comp.meetName,
       date:      comp.date,
-      event:     comp.event,
-      placing:   comp.placing,
-      time:      comp.time,
+      course:    comp.course || 'LCM',
+      verified:  comp.verified || false,
+      results,
+      // Back-compat for the single-result CompetitionEntry card design
+      event:     results[0]?.event,
+      placing:   results[0]?.placing,
+      time:      results[0]?.time,
       timestamp: comp.date ? new Date(comp.date) : null,
       priority:  3,
     });

@@ -15,12 +15,20 @@ import {
 } from 'lucide-react';
 import {
   INDIAN_STATES, UNDERSERVED_STATES, SWIM_EVENTS, BENCHMARKS,
-  parseTime, fmtSecs, formatTime,
+  parseTime, parseTimeSmart, fmtSecs, formatTime,
+  COURSES, COURSE_LABELS_SHORT,
+  getEventField, getEventTime, getEventsWithTimes,
+  computeFinaPoints, getBestFinaForEvent,
+  computeAthleteFinaScore, suggestEvents, rankEventsByFina,
 } from '../data/swimData';
 import SmartTimeInput from './SmartTimeInput';
 import Onboarding from './Onboarding';
 
 // ─── Module-level constants (don't recreate on every render — bug A7) ────────
+
+// Legacy swim-time fields = LCM (long course). SCM fields use _SCM suffix.
+const _LCM_FIELDS = Object.fromEntries(SWIM_EVENTS.map(({ field }) => [field, '']));
+const _SCM_FIELDS = Object.fromEntries(SWIM_EVENTS.map(({ field }) => [field + '_SCM', '']));
 
 const DEFAULT_FORM = {
   email: '', type: 'Athlete', name: '', bio: '', gender: '',
@@ -29,23 +37,22 @@ const DEFAULT_FORM = {
   primaryEvent: '', secondaryEvent: '',
   clubName: '', coachName: '',
   contactEmail: '',
-  // Swim time fields
-  swimming50mFreestyleTime: '', swimming100mFreestyleTime: '', swimming200mFreestyleTime: '',
-  swimming400mFreestyleTime: '', swimming800mFreestyleTime: '', swimming1500mFreestyleTime: '',
-  swimming50mBackstrokeTime: '', swimming100mBackstrokeTime: '', swimming200mBackstrokeTime: '',
-  swimming50mBreaststrokeTime: '', swimming100mBreaststrokeTime: '', swimming200mBreaststrokeTime: '',
-  swimming50mButterflyTime: '', swimming100mButterflyTime: '', swimming200mButterflyTime: '',
-  swimming200mIndividualMedleyTime: '', swimming400mIndividualMedleyTime: '',
-  verifications: {},
-  competitionHistory: [],
+  ..._LCM_FIELDS,
+  ..._SCM_FIELDS,
+  verifications: {},        // { fieldName: { status, meetName } } — covers both LCM and SCM keys
+  competitionHistory: [],    // see schema below
   photos: [], videos: [],
-  // Scout-activity counters (Fix 4)
   profileViews: 0,
   profileViewsThisWeek: 0,
   profileViewEvents: [],
-  // Onboarding state (Fix 5)
   onboardingCompleted: false,
 };
+
+// Competition history schema (v2 — multi-event per meet):
+//   { id, meetName, date, course: 'LCM'|'SCM', verified: boolean,
+//     results: [{ event, time, placing }] }
+// v1 entries (flat shape with .event/.time/.placing on the top object) are
+// auto-migrated on load into a single-result v2 entry.
 
 const PLACE_COLORS = {
   '1st': 'bg-amber-100 text-amber-700',
@@ -342,6 +349,431 @@ function RequestVerifyModal({
   );
 }
 
+// ─── Athlete FINA score + event suggestion card ─────────────────────────────
+
+function FinaScoreCard({ score, ranking, suggestion, isMyProfile, currentPrimary, currentSecondary, onApplySuggestion }) {
+  // The suggestion is "useful" if the platform's choice differs from what the
+  // athlete currently has set. Otherwise it's just a vanity confirmation.
+  const suggestedPrimary   = suggestion?.primary?.event   || null;
+  const suggestedSecondary = suggestion?.secondary?.event || null;
+  const primaryDiffers   = suggestedPrimary   && suggestedPrimary   !== currentPrimary;
+  const secondaryDiffers = suggestedSecondary && suggestedSecondary !== currentSecondary;
+  const hasUsefulSuggestion = primaryDiffers || secondaryDiffers;
+
+  return (
+    <div className="bg-gradient-to-br from-amber-50 to-blue-50 rounded-2xl border border-amber-200 p-5">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-0.5">FINA Score</div>
+          <div className="text-4xl font-extrabold text-[#0B2E4E] leading-none">{score || '—'}</div>
+          <div className="text-xs text-gray-500 mt-1">
+            Average of your best 4 events. World-record pace = 1000.
+          </div>
+        </div>
+        {ranking.length > 0 && (
+          <div className="flex-1 min-w-[200px]">
+            <div className="text-xs font-semibold text-gray-600 mb-1">Top events</div>
+            <div className="space-y-1">
+              {ranking.slice(0, 4).map(({ event, points, course }) => (
+                <div key={event} className="flex items-center justify-between text-xs">
+                  <span className="text-gray-700 truncate">{event}</span>
+                  <span className="ml-2 shrink-0">
+                    <span className={`text-[10px] font-semibold px-1 py-0.5 rounded mr-1 ${
+                      course === 'LCM' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+                    }`}>{course}</span>
+                    <span className="font-semibold text-amber-700">{points}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Suggestion sub-panel — only renders if there's something useful to suggest */}
+      {isMyProfile && hasUsefulSuggestion && (
+        <div className="mt-4 bg-white rounded-xl border border-amber-200 p-3">
+          <div className="text-xs font-bold text-[#0B2E4E] mb-1.5">Suggested events</div>
+          <p className="text-xs text-gray-600 mb-2">
+            Based on your FINA points, your strongest events look different to what you've
+            currently set. Scouts filter by primary event — make sure it shows what you're best at.
+          </p>
+          <div className="space-y-1 text-xs">
+            {primaryDiffers && (
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500 shrink-0">Primary:</span>
+                <span className="font-semibold text-[#0B2E4E]">{suggestedPrimary}</span>
+                <span className="text-amber-700 font-semibold">({suggestion.primary.points} pts)</span>
+              </div>
+            )}
+            {secondaryDiffers && (
+              <div className="flex items-center gap-2">
+                <span className="text-gray-500 shrink-0">Secondary:</span>
+                <span className="font-semibold text-[#0B2E4E]">{suggestedSecondary || '—'}</span>
+                {suggestion.secondary && (
+                  <span className="text-amber-700 font-semibold">({suggestion.secondary.points} pts)</span>
+                )}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={() => onApplySuggestion(suggestedPrimary || currentPrimary, suggestedSecondary || currentSecondary)}
+            className="mt-3 px-3 py-1.5 bg-[#0B2E4E] text-white rounded-md text-xs font-semibold hover:bg-[#0d3a5c]"
+          >
+            Apply suggestion
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Where You Stand — toggle-able benchmark panel ───────────────────────────
+
+function WhereYouStandPanel({ formData, eventRanking }) {
+  // Default to the event with the highest FINA points (Fix 7).
+  const [selectedEvent, setSelectedEvent] = useState(() => eventRanking[0]?.event || formData.primaryEvent);
+
+  // If the ranking changes (e.g. user adds new times), keep selection valid.
+  useEffect(() => {
+    if (!eventRanking.find((e) => e.event === selectedEvent)) {
+      setSelectedEvent(eventRanking[0]?.event || '');
+    }
+  }, [eventRanking, selectedEvent]);
+
+  const best = selectedEvent ? getBestFinaForEvent(formData, selectedEvent) : null;
+  if (!best) return null;
+
+  return (
+    <div className="space-y-2">
+      {/* Event selector */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Where You Stand</span>
+        <select
+          value={selectedEvent}
+          onChange={(e) => setSelectedEvent(e.target.value)}
+          className="bg-white border border-gray-200 rounded-md px-2 py-1 text-xs font-semibold text-[#0B2E4E] focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+        >
+          {eventRanking.map(({ event, course, points }) => (
+            <option key={event} value={event}>
+              {event} — {course} ({points} FINA)
+            </option>
+          ))}
+        </select>
+        <span className="text-[10px] text-gray-400">
+          Showing your stronger of LCM/SCM by FINA points
+        </span>
+      </div>
+
+      <BenchmarkPanel event={selectedEvent} time={best.time} gender={formData.gender} />
+    </div>
+  );
+}
+
+// ─── Competition history — add form (v2: multi-event per meet) ──────────────
+
+function AddCompetitionForm({ newComp, setNewComp, toggleNewCompEvent, updateNewCompResult, onSubmit }) {
+  const [expanded, setExpanded] = useState(false);
+  const canSubmit = newComp.meetName?.trim() && newComp.selectedEvents.length > 0 &&
+                    newComp.selectedEvents.some((ev) => newComp.results?.[ev]?.time?.trim());
+
+  return (
+    <div className="bg-blue-50 rounded-xl p-4 mb-4">
+      {!expanded ? (
+        <button
+          onClick={() => setExpanded(true)}
+          className="w-full flex items-center justify-center gap-2 text-sm font-semibold text-[#0B2E4E] py-2 hover:bg-blue-100 rounded-lg transition-colors"
+        >
+          <Plus size={14} /> Log a Competition
+        </button>
+      ) : (
+        <>
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs font-semibold text-[#0B2E4E] uppercase tracking-wide">Log a Competition</div>
+            <button onClick={() => setExpanded(false)} className="text-gray-400 hover:text-gray-600">
+              <X size={14} />
+            </button>
+          </div>
+
+          {/* Step 1: meet name + date + course */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 mb-3">
+            <input
+              type="text" placeholder="Meet name *"
+              value={newComp.meetName}
+              onChange={(e) => setNewComp((p) => ({ ...p, meetName: e.target.value }))}
+              className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+            />
+            <input
+              type="date"
+              value={newComp.date}
+              onChange={(e) => setNewComp((p) => ({ ...p, date: e.target.value }))}
+              className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+            />
+            <select
+              value={newComp.course}
+              onChange={(e) => setNewComp((p) => ({ ...p, course: e.target.value }))}
+              className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+            >
+              <option value="LCM">Long Course (50m)</option>
+              <option value="SCM">Short Course (25m)</option>
+            </select>
+          </div>
+
+          {/* Step 2: pick events */}
+          <div className="mb-3">
+            <div className="text-[11px] font-semibold text-gray-600 mb-1.5">Events raced ({newComp.selectedEvents.length}):</div>
+            <div className="flex flex-wrap gap-1.5">
+              {SWIM_EVENTS.map(({ label }) => {
+                const selected = newComp.selectedEvents.includes(label);
+                return (
+                  <button
+                    key={label}
+                    onClick={() => toggleNewCompEvent(label)}
+                    className={`text-[11px] px-2 py-1 rounded-md border transition-colors ${
+                      selected
+                        ? 'bg-[#0B2E4E] text-white border-[#0B2E4E]'
+                        : 'bg-white text-gray-600 border-gray-200 hover:border-[#1565C0]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Step 3: time + placing per selected event */}
+          {newComp.selectedEvents.length > 0 && (
+            <div className="mb-3 space-y-2">
+              <div className="text-[11px] font-semibold text-gray-600">Times for each event:</div>
+              {newComp.selectedEvents.map((event) => {
+                const r = newComp.results?.[event] || {};
+                return (
+                  <div key={event} className="grid grid-cols-12 gap-2 items-center">
+                    <span className="col-span-12 md:col-span-5 text-xs font-medium text-[#0B2E4E]">{event}</span>
+                    <input
+                      type="text" placeholder="Time *"
+                      value={r.time || ''}
+                      onChange={(e) => updateNewCompResult(event, 'time', e.target.value)}
+                      className="col-span-7 md:col-span-4 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+                    />
+                    <input
+                      type="text" placeholder="Placing"
+                      value={r.placing || ''}
+                      onChange={(e) => updateNewCompResult(event, 'placing', e.target.value)}
+                      className="col-span-5 md:col-span-3 border border-gray-200 rounded-lg px-2 py-1 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+                    />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="flex gap-2">
+            <button
+              disabled={!canSubmit}
+              onClick={() => { onSubmit(); setExpanded(false); }}
+              className="flex-1 bg-[#0B2E4E] text-white rounded-lg px-3 py-1.5 text-xs font-semibold hover:bg-[#0d3a5c] disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Save Competition
+            </button>
+            <button
+              onClick={() => setExpanded(false)}
+              className="px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700"
+            >
+              Cancel
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Competition entry card (display) ────────────────────────────────────────
+
+function CompetitionEntryCard({ entry, gender, isMyProfile, onRemove }) {
+  return (
+    <div className="border border-gray-100 rounded-xl p-4 hover:border-blue-200 transition-colors">
+      <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
+        <div>
+          <div className="font-semibold text-[#0B2E4E] text-sm">{entry.meetName}</div>
+          <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2">
+            {entry.date && <span>{entry.date}</span>}
+            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+              entry.course === 'SCM' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
+            }`}>
+              {entry.course || 'LCM'}
+            </span>
+            {/* Item #9 stub — explanatory message when not yet verified */}
+            {entry.verified ? (
+              <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded">
+                <ShieldCheck size={9} /> Verified Meet
+              </span>
+            ) : (
+              <span
+                className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded"
+                title="We couldn't find this competition in our database of recent Indian meets."
+              >
+                <AlertCircle size={9} /> Unverified
+              </span>
+            )}
+          </div>
+        </div>
+        {isMyProfile && (
+          <button onClick={onRemove} className="text-gray-400 hover:text-red-500">
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      <div className="overflow-x-auto -mx-1 px-1">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-[10px] font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-100">
+              <th className="pb-1.5 pr-3">Event</th>
+              <th className="pb-1.5 pr-3">Time</th>
+              <th className="pb-1.5 pr-3">FINA</th>
+              <th className="pb-1.5">Place</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(entry.results || []).map((r, i) => {
+              const placeColor = PLACE_COLORS[r.placing] || 'bg-gray-100 text-gray-600';
+              // FINA points may have been computed at save time; recompute as fallback
+              const pts = r.finaPoints ?? computeFinaPoints(r.time, r.event, entry.course || 'LCM', gender);
+              return (
+                <tr key={i} className="border-b border-gray-50 last:border-0">
+                  <td className="py-1.5 pr-3 font-medium text-gray-800">{r.event}</td>
+                  <td className="py-1.5 pr-3 font-bold text-[#0B2E4E]">
+                    {formatTime(r.time)}
+                    {r.isPB && (
+                      <span className="ml-1.5 inline-flex items-center gap-0.5 text-[10px] font-bold text-amber-700 bg-amber-100 px-1 py-0.5 rounded">
+                        🏆 PB
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-1.5 pr-3 font-semibold text-amber-700">{pts || '—'}</td>
+                  <td className="py-1.5">
+                    {r.placing ? (
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${placeColor}`}>
+                        {r.placing}
+                      </span>
+                    ) : '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Event time entry card (LCM + SCM side by side) ─────────────────────────
+
+function EventTimeCard({
+  event, formData, setFormData, setVerification,
+  dirtyFields, focusedField, fieldHandlers, onRequestVerify,
+}) {
+  return (
+    <div className="border border-gray-100 rounded-xl p-3">
+      <div className="text-xs font-semibold text-[#0B2E4E] mb-2">{event}</div>
+      <div className="grid grid-cols-2 gap-2">
+        {COURSES.map((course) => (
+          <CourseSlot
+            key={course}
+            event={event}
+            course={course}
+            formData={formData}
+            setFormData={setFormData}
+            setVerification={setVerification}
+            dirtyFields={dirtyFields}
+            focusedField={focusedField}
+            fieldHandlers={fieldHandlers}
+            onRequestVerify={onRequestVerify}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CourseSlot({
+  event, course, formData, setFormData, setVerification,
+  dirtyFields, focusedField, fieldHandlers, onRequestVerify,
+}) {
+  const field = getEventField(event, course);
+  const time = formData[field] || '';
+  const verif = formData.verifications?.[field] || {};
+  const isDirty = dirtyFields.has(field);
+  const isFocused = focusedField === field;
+  const finaPoints = time ? computeFinaPoints(time, event, course, formData.gender) : 0;
+  const isVerified = verif.status === 'meet' || verif.status === 'coach';
+
+  const cue = isFocused
+    ? 'border-amber-400 ring-2 ring-amber-200'
+    : isDirty
+      ? 'border-amber-400 border-l-4 border-l-amber-400'
+      : 'border-gray-200';
+
+  return (
+    <div className={`relative bg-gray-50 rounded-lg p-2 border transition-all ${cue}`}>
+      <div className="flex items-center justify-between mb-1">
+        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+          course === 'LCM' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+        }`}>
+          {course}
+        </span>
+        {isFocused && (
+          <span className="text-[9px] font-semibold text-amber-600 uppercase">Editing</span>
+        )}
+        {!isFocused && isDirty && (
+          <span className="text-[9px] font-semibold text-amber-700">● Unsaved</span>
+        )}
+      </div>
+      <div {...fieldHandlers(field)}>
+        <SmartTimeInput
+          value={time}
+          onChange={(v) => setFormData((prev) => ({ ...prev, [field]: v }))}
+          event={event}
+          course={course}
+          gender={formData.gender}
+          showHint={false}
+          placeholder={course === 'LCM' ? 'Long course' : 'Short course'}
+          className="w-full bg-white border border-gray-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#1565C0]"
+        />
+      </div>
+      {time && (
+        <>
+          <div className="mt-1 text-[10px] text-amber-700 font-semibold">
+            {finaPoints} FINA
+          </div>
+          <select
+            value={verif.status || ''}
+            onChange={(e) => setVerification(field, e.target.value, verif.meetName)}
+            className="mt-1 w-full border border-gray-200 rounded px-1.5 py-0.5 text-[10px] bg-white focus:outline-none"
+          >
+            <option value="">Unverified</option>
+            <option value="coach">Coach</option>
+            <option value="meet">Meet</option>
+          </select>
+          {!isVerified && (
+            <button
+              onClick={() => onRequestVerify(field, time)}
+              className="mt-1 w-full text-[10px] text-[#1565C0] hover:text-[#0B2E4E] flex items-center justify-center gap-0.5"
+              title="Request coach verification"
+            >
+              <MessageSquare size={9} /> Verify
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Profile component ──────────────────────────────────────────────────
 
 export default function Profile({ isMyProfile }) {
@@ -354,7 +786,13 @@ export default function Profile({ isMyProfile }) {
   const [uploadDescription, setUploadDescription] = useState('');
   const [pendingUploads, setPendingUploads] = useState([]);
   const [uploadType, setUploadType] = useState('');
-  const [newComp, setNewComp] = useState({ meetName: '', date: '', event: '', placing: '', time: '' });
+  // New competition entry — v2 shape
+  // results: { [event]: { time, placing } } during entry; flattened to array on save.
+  const [newComp, setNewComp] = useState({
+    meetName: '', date: '', course: 'LCM',
+    selectedEvents: [],                  // event labels the swimmer raced
+    results:        {},                  // { [event]: { time, placing } }
+  });
   const [profileMissing, setProfileMissing] = useState(false);  // Bug A8 — invalid /:userId
   const [verifyTarget, setVerifyTarget] = useState(null);       // {field, label, time}
 
@@ -394,6 +832,8 @@ export default function Profile({ isMyProfile }) {
           ...DEFAULT_FORM,
           ...Object.fromEntries(Object.keys(DEFAULT_FORM).map((k) => [k, d[k] ?? DEFAULT_FORM[k]])),
         };
+        // Migrate v1 competition history → v2 (multi-event per meet)
+        merged.competitionHistory = migrateCompetitionHistory(merged.competitionHistory);
         setFormData(merged);
         if (isMyProfile) setBaseline(merged);
       } else if (isMyProfile && user) {
@@ -412,9 +852,29 @@ export default function Profile({ isMyProfile }) {
   // ── Derived values (always called — Rules of Hooks compliant) ──────────────
 
   const isUnderserved   = useMemo(() => UNDERSERVED_STATES.has(formData.state), [formData.state]);
-  const enteredTimes    = useMemo(() => SWIM_EVENTS.filter((e) => formData[e.field]?.trim()), [formData]);
-  const primaryEventObj = useMemo(() => SWIM_EVENTS.find((e) => e.label === formData.primaryEvent), [formData.primaryEvent]);
-  const primaryBestTime = primaryEventObj ? formData[primaryEventObj.field] : null;
+  // Entered (event, course) pairs that have a time. Sorted by FINA pts desc
+  // so the athlete's strongest swims show first.
+  const enteredTimes = useMemo(() => {
+    const out = [];
+    for (const { label } of SWIM_EVENTS) {
+      for (const course of COURSES) {
+        const field = getEventField(label, course);
+        const time = formData[field]?.trim();
+        if (time) {
+          const finaPoints = computeFinaPoints(time, label, course, formData.gender);
+          out.push({ label, field, course, time, finaPoints });
+        }
+      }
+    }
+    return out.sort((a, b) => b.finaPoints - a.finaPoints);
+  }, [formData]);
+
+  // Athlete's overall FINA score (avg of best 4 events) — surfaced as a card
+  const athleteFina = useMemo(() => computeAthleteFinaScore(formData), [formData]);
+
+  // Event ranking for the suggestion panel
+  const eventRanking = useMemo(() => rankEventsByFina(formData), [formData]);
+  const eventSuggestion = useMemo(() => suggestEvents(formData), [formData]);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -507,13 +967,81 @@ export default function Profile({ isMyProfile }) {
     setUploadType('');
   };
 
+  // Save a competition entry. For every result that beats the athlete's
+  // existing best for that (event, course), write it back to the swim time
+  // field — that's the PB propagation flow (item #2).
   const addCompetition = () => {
-    if (!newComp.meetName || !newComp.event || !newComp.time) return;
+    const events = (newComp.selectedEvents || []).filter(Boolean);
+    if (!newComp.meetName || events.length === 0) return;
+
+    // Build the results array, marking which results are PBs and computing
+    // FINA points for each.
+    const results = [];
+    const pbUpdates = {};   // { fieldName: newTime } — applied to formData
+    for (const event of events) {
+      const r = newComp.results?.[event] || {};
+      if (!r.time?.trim()) continue;
+      const field = getEventField(event, newComp.course);
+      const prevTime = formData[field]?.trim();
+      const prevSecs = prevTime ? parseTimeSmart(prevTime) : null;
+      const newSecs  = parseTimeSmart(r.time);
+      const isPB = newSecs !== null && (prevSecs === null || newSecs < prevSecs);
+      if (isPB) pbUpdates[field] = r.time;
+      results.push({
+        event,
+        time:        r.time.trim(),
+        placing:     r.placing?.trim() || '',
+        finaPoints:  computeFinaPoints(r.time, event, newComp.course, formData.gender),
+        isPB,
+      });
+    }
+    if (results.length === 0) return;
+
+    const newEntry = {
+      id:       Date.now().toString(),
+      meetName: newComp.meetName.trim(),
+      date:     newComp.date || '',
+      course:   newComp.course || 'LCM',
+      verified: false,              // item #9 lives here, populated later
+      results,
+    };
+
     setFormData((prev) => ({
       ...prev,
-      competitionHistory: [{ ...newComp, id: Date.now().toString() }, ...(prev.competitionHistory || [])],
+      ...pbUpdates,
+      competitionHistory: [newEntry, ...(prev.competitionHistory || [])],
     }));
-    setNewComp({ meetName: '', date: '', event: '', placing: '', time: '' });
+
+    setNewComp({ meetName: '', date: '', course: 'LCM', selectedEvents: [], results: {} });
+  };
+
+  // Toggle whether an event is part of the new competition entry
+  const toggleNewCompEvent = (event) => {
+    setNewComp((prev) => {
+      const has = prev.selectedEvents.includes(event);
+      const next = {
+        ...prev,
+        selectedEvents: has
+          ? prev.selectedEvents.filter((e) => e !== event)
+          : [...prev.selectedEvents, event],
+      };
+      // Clean up the results entry when removing an event
+      if (has) {
+        const { [event]: _drop, ...rest } = prev.results;
+        next.results = rest;
+      }
+      return next;
+    });
+  };
+
+  const updateNewCompResult = (event, key, value) => {
+    setNewComp((prev) => ({
+      ...prev,
+      results: {
+        ...prev.results,
+        [event]: { ...(prev.results[event] || {}), [key]: value },
+      },
+    }));
   };
 
   const removeCompetition = (id) => {
@@ -856,120 +1384,91 @@ export default function Profile({ isMyProfile }) {
           </div>
         </div>
 
-        {/* ── Benchmark Panel (Fix 3 — public visible) ─────────────────── */}
-        {formData.primaryEvent && primaryBestTime && (
-          <BenchmarkPanel
-            event={formData.primaryEvent}
-            time={primaryBestTime}
-            gender={formData.gender}
+        {/* ── Athlete FINA score + suggested events ───────────────────── */}
+        {(athleteFina > 0 || eventRanking.length > 0) && (
+          <FinaScoreCard
+            score={athleteFina}
+            ranking={eventRanking}
+            suggestion={eventSuggestion}
+            isMyProfile={isMyProfile}
+            currentPrimary={formData.primaryEvent}
+            currentSecondary={formData.secondaryEvent}
+            onApplySuggestion={(primary, secondary) =>
+              setFormData((prev) => ({ ...prev, primaryEvent: primary, secondaryEvent: secondary }))
+            }
           />
+        )}
+
+        {/* ── Where You Stand (toggle-able across all events) ─────────── */}
+        {eventRanking.length > 0 && (
+          <WhereYouStandPanel formData={formData} eventRanking={eventRanking} />
         )}
 
         {/* ── Swim Times ───────────────────────────────────────────────── */}
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
-          <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Swim Times</h3>
+          <div className="flex flex-wrap items-baseline justify-between gap-2 mb-1">
+            <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider">Swim Times</h3>
+            <p className="text-[11px] text-gray-500">
+              Enter <span className="font-semibold text-[#0B2E4E]">long course (50m)</span> and{' '}
+              <span className="font-semibold text-[#0B2E4E]">short course (25m)</span> separately.
+              FINA points are computed against the world record for each course.
+            </p>
+          </div>
 
-          {/* Smart time entry grid */}
+          {/* Smart time entry grid — one card per event, both courses inside */}
           {isMyProfile && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
-              {SWIM_EVENTS.map(({ label, field }) => {
-                const verif = formData.verifications?.[field] || {};
-                const isDirty = dirtyFields.has(field);
-                const isFocused = focusedField === field;
-                const cardCue = isFocused
-                  ? 'border-amber-400 ring-2 ring-amber-200'
-                  : isDirty
-                    ? 'border-amber-400 border-l-4 border-l-amber-400'
-                    : 'border-gray-100';
-                return (
-                  <div key={field} className={`relative border rounded-xl p-3 transition-all ${cardCue}`}>
-                    <div className="text-xs font-medium text-gray-600 mb-2 flex items-center gap-1.5">
-                      <span>{label}</span>
-                      {isFocused && (
-                        <span className="text-[9px] font-semibold text-amber-600 uppercase tracking-wide">Editing</span>
-                      )}
-                      {!isFocused && isDirty && (
-                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
-                          <span className="w-1 h-1 rounded-full bg-amber-500" /> Unsaved
-                        </span>
-                      )}
-                    </div>
-                    <div {...fieldHandlers(field)}>
-                      <SmartTimeInput
-                        value={formData[field]}
-                        onChange={(v) => setFormData((prev) => ({ ...prev, [field]: v }))}
-                        event={label}
-                        gender={formData.gender}
-                        className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#1565C0] mb-1"
-                      />
-                    </div>
-                    {formData[field] && (
-                      <div className="space-y-1 mt-2">
-                        <select
-                          value={verif.status || ''}
-                          onChange={(e) => setVerification(field, e.target.value, verif.meetName)}
-                          className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-[#1565C0]"
-                        >
-                          <option value="">Unverified</option>
-                          <option value="coach">Coach Verified</option>
-                          <option value="meet">Meet Verified</option>
-                        </select>
-                        {verif.status === 'meet' && (
-                          <input
-                            type="text"
-                            value={verif.meetName || ''}
-                            onChange={(e) => setVerification(field, 'meet', e.target.value)}
-                            className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none"
-                            placeholder="Meet name / source"
-                          />
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6 mt-3">
+              {SWIM_EVENTS.map(({ label }) => (
+                <EventTimeCard
+                  key={label}
+                  event={label}
+                  formData={formData}
+                  setFormData={setFormData}
+                  setVerification={setVerification}
+                  dirtyFields={dirtyFields}
+                  focusedField={focusedField}
+                  fieldHandlers={fieldHandlers}
+                  onRequestVerify={(field, time) => setVerifyTarget({ field, label, time })}
+                />
+              ))}
             </div>
           )}
 
-          {/* Times table */}
+          {/* Times table — one row per (event, course) with a time */}
           {enteredTimes.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-100">
                     <th className="pb-2 pr-4">Event</th>
-                    <th className="pb-2 pr-4">Best Time</th>
+                    <th className="pb-2 pr-4">Course</th>
+                    <th className="pb-2 pr-4">Time</th>
+                    <th className="pb-2 pr-4">FINA</th>
                     <th className="pb-2 pr-4">Verification</th>
                     <th className="pb-2">Source</th>
-                    {isMyProfile && <th className="pb-2 text-right" />}
                   </tr>
                 </thead>
                 <tbody>
-                  {enteredTimes.map(({ label, field }) => {
+                  {enteredTimes.map(({ label, field, course, time, finaPoints }) => {
                     const verif = formData.verifications?.[field] || {};
                     const isPrimary = label === formData.primaryEvent;
-                    const isVerified = verif.status === 'meet' || verif.status === 'coach';
                     return (
                       <tr key={field} className={`border-b border-gray-50 ${isPrimary ? 'bg-blue-50' : ''}`}>
                         <td className="py-2.5 pr-4 font-medium text-[#0B2E4E]">
                           {label}
                           {isPrimary && <span className="ml-2 text-xs text-blue-500 font-normal">Primary</span>}
                         </td>
-                        <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{formatTime(formData[field])}</td>
+                        <td className="py-2.5 pr-4">
+                          <span className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                            course === 'LCM' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+                          }`}>
+                            {course}
+                          </span>
+                        </td>
+                        <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{formatTime(time)}</td>
+                        <td className="py-2.5 pr-4 font-semibold text-amber-700">{finaPoints || '—'}</td>
                         <td className="py-2.5 pr-4"><VerificationBadge status={verif.status} /></td>
                         <td className="py-2.5 text-gray-400 text-xs">{verif.meetName || '—'}</td>
-                        {isMyProfile && (
-                          <td className="py-2.5 text-right">
-                            {!isVerified && (
-                              <button
-                                onClick={() => setVerifyTarget({ field, label, time: formData[field] })}
-                                className="text-xs font-medium text-[#1565C0] hover:text-[#0B2E4E] inline-flex items-center gap-1"
-                              >
-                                <MessageSquare size={11} /> Request verification
-                              </button>
-                            )}
-                          </td>
-                        )}
                       </tr>
                     );
                   })}
@@ -983,68 +1482,31 @@ export default function Profile({ isMyProfile }) {
           )}
         </div>
 
-        {/* ── Competition History ──────────────────────────────────────── */}
+        {/* ── Competition History (v2 — multi-event per meet) ────────────── */}
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Competition History</h3>
 
           {isMyProfile && (
-            <div className="bg-blue-50 rounded-xl p-4 mb-4">
-              <div className="text-xs font-medium text-gray-600 mb-3">Add Competition Result</div>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-2">
-                <input type="text" placeholder="Meet Name *" value={newComp.meetName} onChange={(e) => setNewComp({ ...newComp, meetName: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]" />
-                <input type="date" value={newComp.date} onChange={(e) => setNewComp({ ...newComp, date: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]" />
-                <select value={newComp.event} onChange={(e) => setNewComp({ ...newComp, event: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]">
-                  <option value="">Event *</option>
-                  {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
-                </select>
-                <input type="text" placeholder="Placing (e.g. 2nd)" value={newComp.placing} onChange={(e) => setNewComp({ ...newComp, placing: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]" />
-                <input type="text" placeholder="Time * (e.g. 1:54.32)" value={newComp.time} onChange={(e) => setNewComp({ ...newComp, time: e.target.value })} className="border border-gray-200 rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-[#1565C0]" />
-                <button onClick={addCompetition} className="flex items-center justify-center gap-1 bg-[#0B2E4E] text-white rounded-lg px-3 py-1.5 text-xs font-medium hover:bg-[#0d3a5c]">
-                  <Plus size={12} /> Add
-                </button>
-              </div>
-            </div>
+            <AddCompetitionForm
+              newComp={newComp}
+              setNewComp={setNewComp}
+              toggleNewCompEvent={toggleNewCompEvent}
+              updateNewCompResult={updateNewCompResult}
+              onSubmit={addCompetition}
+            />
           )}
 
           {(formData.competitionHistory?.length > 0) ? (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="text-left text-xs font-medium text-gray-500 uppercase tracking-wider border-b border-gray-100">
-                    <th className="pb-2 pr-4">Meet</th>
-                    <th className="pb-2 pr-4">Date</th>
-                    <th className="pb-2 pr-4">Event</th>
-                    <th className="pb-2 pr-4">Place</th>
-                    <th className="pb-2 pr-4">Time</th>
-                    {isMyProfile && <th className="pb-2" />}
-                  </tr>
-                </thead>
-                <tbody>
-                  {formData.competitionHistory.map((c) => {
-                    const placeColor = PLACE_COLORS[c.placing] || 'bg-orange-100 text-orange-600';
-                    return (
-                      <tr key={c.id} className="border-b border-gray-50">
-                        <td className="py-2.5 pr-4 font-medium text-gray-800">{c.meetName}</td>
-                        <td className="py-2.5 pr-4 text-gray-500">{c.date}</td>
-                        <td className="py-2.5 pr-4 text-gray-600">{c.event}</td>
-                        <td className="py-2.5 pr-4">
-                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${placeColor}`}>
-                            {c.placing || '—'}
-                          </span>
-                        </td>
-                        <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{formatTime(c.time)}</td>
-                        {isMyProfile && (
-                          <td className="py-2.5">
-                            <button onClick={() => removeCompetition(c.id)} className="text-gray-400 hover:text-red-500 transition-colors">
-                              <X size={14} />
-                            </button>
-                          </td>
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="space-y-3">
+              {formData.competitionHistory.map((c) => (
+                <CompetitionEntryCard
+                  key={c.id}
+                  entry={c}
+                  gender={formData.gender}
+                  isMyProfile={isMyProfile}
+                  onRemove={() => removeCompetition(c.id)}
+                />
+              ))}
             </div>
           ) : (
             <div className="text-center py-8 text-gray-400 text-sm">
@@ -1171,6 +1633,28 @@ function Field({ label, required, dirty, focused, children }) {
       {children}
     </div>
   );
+}
+
+// ── Migrate v1 competition history → v2 (multi-event per meet) ─────────────
+// v1: { id, meetName, date, event, placing, time }
+// v2: { id, meetName, date, course, verified, results: [{event, placing, time}] }
+function migrateCompetitionHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history.map((entry) => {
+    if (Array.isArray(entry?.results)) return entry;  // already v2
+    return {
+      id:       entry.id || (Date.now() + Math.random()).toString(),
+      meetName: entry.meetName || '',
+      date:     entry.date || '',
+      course:   entry.course || 'LCM',   // legacy entries default to long course
+      verified: false,
+      results:  entry.event ? [{
+        event:   entry.event,
+        time:    entry.time || '',
+        placing: entry.placing || '',
+      }] : [],
+    };
+  });
 }
 
 // ── ISO week number — used to roll over the "this week" view counter ───────

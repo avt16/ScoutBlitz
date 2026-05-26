@@ -159,14 +159,147 @@ export const parseTimeSmart = (input) => {
 
 // Validate a parsed time against the world record for the event.
 // Returns { ok: true } or { ok: false, reason: '...' }.
-export const validateTime = (secs, event, gender) => {
+export const validateTime = (secs, event, gender, course = 'LCM') => {
   if (secs === null || secs === undefined) return { ok: false, reason: 'Invalid time format' };
   if (secs <= 0) return { ok: false, reason: 'Time must be greater than zero' };
-  const wr = WORLD_RECORDS[event];
+  const wr = (course === 'SCM' ? SCM_WORLD_RECORDS : WORLD_RECORDS)[event];
   if (!wr) return { ok: true };
   const gk = gender === 'Female' ? 'female' : 'male';
   if (secs < wr[gk]) {
-    return { ok: false, reason: `Faster than the current world record (${fmtSecs(wr[gk])}). Double-check your entry.` };
+    return {
+      ok: false,
+      reason: `Faster than the current ${course} world record (${fmtSecs(wr[gk])}). Double-check your entry.`,
+    };
   }
   return { ok: true };
+};
+
+// ─── SCM (25m / short course) world records ──────────────────────────────────
+// As of 2024–2025, source: World Aquatics. Rounded conservatively. Used for
+// FINA point base times and SmartTimeInput validation when the course is SCM.
+export const SCM_WORLD_RECORDS = {
+  '50m Freestyle':          { male: 19.90,  female: 22.83 },
+  '100m Freestyle':         { male: 44.84,  female: 49.96 },
+  '200m Freestyle':         { male: 99.37,  female: 109.55 },
+  '400m Freestyle':         { male: 211.18, female: 230.81 },
+  '800m Freestyle':         { male: 433.92, female: 471.65 },
+  '1500m Freestyle':        { male: 826.36, female: 901.36 },
+  '50m Backstroke':         { male: 22.11,  female: 25.23 },
+  '100m Backstroke':        { male: 48.33,  female: 53.98 },
+  '200m Backstroke':        { male: 105.63, female: 116.59 },
+  '50m Breaststroke':       { male: 24.95,  female: 28.37 },
+  '100m Breaststroke':      { male: 55.28,  female: 61.92 },
+  '200m Breaststroke':      { male: 121.07, female: 134.57 },
+  '50m Butterfly':          { male: 21.32,  female: 23.78 },
+  '100m Butterfly':         { male: 47.78,  female: 53.67 },
+  '200m Butterfly':         { male: 105.97, female: 119.61 },
+  '200m Individual Medley': { male: 109.63, female: 121.86 },
+  '400m Individual Medley': { male: 234.58, female: 256.16 },
+};
+
+// ─── Course constants ────────────────────────────────────────────────────────
+export const COURSES = ['LCM', 'SCM'];   // long course (50m) | short course (25m)
+export const COURSE_LABELS = { LCM: 'Long Course (50m)', SCM: 'Short Course (25m)' };
+export const COURSE_LABELS_SHORT = { LCM: 'LCM', SCM: 'SCM' };
+
+// SCM time field naming: legacy fields = LCM (kept as source of truth for
+// long-course data); new fields suffixed _SCM hold short-course times.
+//   getEventField('100m Freestyle', 'LCM') → 'swimming100mFreestyleTime'
+//   getEventField('100m Freestyle', 'SCM') → 'swimming100mFreestyleTime_SCM'
+export const getEventField = (event, course = 'LCM') => {
+  const base = SWIM_EVENT_FIELDS[event];
+  if (!base) return null;
+  return course === 'SCM' ? base + '_SCM' : base;
+};
+
+export const SWIM_EVENT_FIELDS_SCM = Object.fromEntries(
+  SWIM_EVENTS.map(({ label, field }) => [label, field + '_SCM']),
+);
+
+// Read a time for a specific (event, course). Returns null if missing.
+export const getEventTime = (user, event, course = 'LCM') => {
+  const f = getEventField(event, course);
+  return f ? (user?.[f] || null) : null;
+};
+
+// All events the user has a time for (in either course).
+export const getEventsWithTimes = (user) => {
+  if (!user) return [];
+  const out = [];
+  for (const { label } of SWIM_EVENTS) {
+    if (getEventTime(user, label, 'LCM')?.trim() || getEventTime(user, label, 'SCM')?.trim()) {
+      out.push(label);
+    }
+  }
+  return out;
+};
+
+// ─── FINA Points ─────────────────────────────────────────────────────────────
+// Standard FINA points formula:
+//   points = 1000 × (worldRecord / athleteTime)^3
+// A world-record swim → 1000 pts. Half the world-record speed → 125 pts.
+// Course-aware: SCM times are compared against SCM world records.
+export const computeFinaPoints = (timeStr, event, course, gender) => {
+  const secs = parseTimeSmart(timeStr);
+  if (!secs || secs <= 0) return 0;
+  const records = course === 'SCM' ? SCM_WORLD_RECORDS : WORLD_RECORDS;
+  const wr = records[event]?.[gender === 'Female' ? 'female' : 'male'];
+  if (!wr) return 0;
+  return Math.round(1000 * Math.pow(wr / secs, 3));
+};
+
+// For a given event, return whichever course gives the higher FINA points.
+// Returns { points, course, time } or null if no time is logged.
+export const getBestFinaForEvent = (user, event) => {
+  const gender = user?.gender;
+  const lcmTime = getEventTime(user, event, 'LCM');
+  const scmTime = getEventTime(user, event, 'SCM');
+  const lcmPts = lcmTime ? computeFinaPoints(lcmTime, event, 'LCM', gender) : 0;
+  const scmPts = scmTime ? computeFinaPoints(scmTime, event, 'SCM', gender) : 0;
+  if (lcmPts === 0 && scmPts === 0) return null;
+  if (scmPts > lcmPts) return { points: scmPts, course: 'SCM', time: scmTime };
+  return { points: lcmPts, course: 'LCM', time: lcmTime };
+};
+
+// Athlete FINA score = average of best 4 events' FINA points.
+// If fewer than 4 events have times, average over what's available.
+export const computeAthleteFinaScore = (user) => {
+  const events = getEventsWithTimes(user);
+  const points = events
+    .map((ev) => getBestFinaForEvent(user, ev))
+    .filter(Boolean)
+    .map((b) => b.points)
+    .sort((a, b) => b - a)
+    .slice(0, 4);
+  if (!points.length) return 0;
+  return Math.round(points.reduce((s, p) => s + p, 0) / points.length);
+};
+
+// Returns events ranked by best FINA points (descending). Used for event
+// suggestion ("your top events by international competitiveness").
+export const rankEventsByFina = (user) => {
+  return getEventsWithTimes(user)
+    .map((ev) => {
+      const best = getBestFinaForEvent(user, ev);
+      return best ? { event: ev, ...best } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.points - a.points);
+};
+
+// Suggest a primary + secondary event based on FINA points.
+export const suggestEvents = (user) => {
+  const ranked = rankEventsByFina(user);
+  return {
+    primary:   ranked[0] || null,
+    secondary: ranked[1] || null,
+    all:       ranked,
+  };
+};
+
+// Override of getBestTimeForEvent so callers automatically pick the
+// higher-FINA course. Backwards-compatible signature.
+export const getBestTimeForEventAuto = (user, event) => {
+  const best = getBestFinaForEvent(user, event);
+  return best ? best.time : null;
 };

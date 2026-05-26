@@ -17,8 +17,9 @@ import { parseTimeSmart, fmtSecs, validateTime } from '../data/swimData';
  *   - placeholder, className, disabled — standard input props
  */
 export default function SmartTimeInput({
-  value, onChange, event, gender,
+  value, onChange, event, gender, course = 'LCM',
   placeholder, className = '', disabled = false,
+  showHint = true,
 }) {
   const [draft, setDraft] = useState(value || '');
   const [warning, setWarning] = useState(null);
@@ -37,7 +38,7 @@ export default function SmartTimeInput({
       setWarning('Could not parse time. Try "54.32" or "1:54.32".');
       return;
     }
-    const v = validateTime(secs, event, gender);
+    const v = validateTime(secs, event, gender, course);
     setWarning(v.ok ? null : v.reason);
     const normalised = fmtSecs(secs);
     setDraft(normalised);
@@ -56,9 +57,11 @@ export default function SmartTimeInput({
         placeholder={placeholder || 'e.g. 1:52.34 or 112.34'}
         className={className}
       />
-      <div className="mt-1 text-[10px] text-gray-400 leading-tight">
-        Accepts <span className="font-mono">54.32</span> or <span className="font-mono">1:54.32</span>
-      </div>
+      {showHint && (
+        <div className="mt-1 text-[10px] text-gray-400 leading-tight">
+          Accepts <span className="font-mono">54.32</span> or <span className="font-mono">1:54.32</span>
+        </div>
+      )}
       {warning && (
         <div className="mt-1 flex items-start gap-1 text-[11px] text-amber-700 bg-amber-50 rounded px-2 py-1">
           <AlertTriangle size={12} className="mt-0.5 shrink-0" />

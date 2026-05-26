@@ -7,7 +7,8 @@ import { signOut, getAuth } from 'firebase/auth';
 import {
   SWIM_EVENTS, SWIM_EVENT_FIELDS, BENCHMARKS,
   UNDERSERVED_STATES, INDIAN_STATES,
-  parseTime, fmtSecs, formatTime, getVerificationLevel, getBestTimeForEvent,
+  parseTime, fmtSecs, formatTime, getVerificationLevel,
+  getBestTimeForEvent, getBestTimeForEventAuto, getEventTime,
 } from '../data/swimData';
 import {
   Search, Star, X, LogOut, Users, Waves,
@@ -289,7 +290,7 @@ function AthleteTable({ athletes, isShortlisted, onOpen, onToggleShortlist, acti
             const id = athlete.uid || athlete.id;
             const verif = getVerificationLevel(athlete);
             const underserved = UNDERSERVED_STATES.has(athlete.state);
-            const bestTime = getBestTimeForEvent(athlete, athlete.primaryEvent);
+            const bestTime = getBestTimeForEventAuto(athlete, athlete.primaryEvent);
             const starred = isShortlisted(id);
             return (
               <tr
@@ -345,7 +346,7 @@ function AthleteCards({ athletes, isShortlisted, onOpen, onToggleShortlist, acti
         const id = athlete.uid || athlete.id;
         const verif = getVerificationLevel(athlete);
         const underserved = UNDERSERVED_STATES.has(athlete.state);
-        const bestTime = getBestTimeForEvent(athlete, athlete.primaryEvent);
+        const bestTime = getBestTimeForEventAuto(athlete, athlete.primaryEvent);
         const starred = isShortlisted(id);
         return (
           <div
@@ -391,11 +392,14 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
   const underserved = UNDERSERVED_STATES.has(athlete.state);
 
   const eventTimes = useMemo(() =>
-    SWIM_EVENTS.map(({ label, field }) => {
-      const timeStr = athlete[field];
-      if (!timeStr || !timeStr.trim()) return null;
-      return { label, field, timeStr, eventVerif: athlete.verifications?.[field]?.status };
-    }).filter(Boolean),
+    SWIM_EVENTS.flatMap(({ label, field }) => {
+      const out = [];
+      const lcm = athlete[field];
+      const scm = athlete[field + '_SCM'];
+      if (lcm?.trim()) out.push({ label, field, course: 'LCM', timeStr: lcm, eventVerif: athlete.verifications?.[field]?.status });
+      if (scm?.trim()) out.push({ label, field: field + '_SCM', course: 'SCM', timeStr: scm, eventVerif: athlete.verifications?.[field + '_SCM']?.status });
+      return out;
+    }),
   [athlete]);
 
   const genderKey = athlete.gender?.toLowerCase() === 'female' ? 'female' : 'male';
@@ -404,7 +408,7 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
     [athlete.primaryEvent, genderKey],
   );
   const primaryTimeSecs = useMemo(
-    () => parseTime(getBestTimeForEvent(athlete, athlete.primaryEvent)),
+    () => parseTime(getBestTimeForEventAuto(athlete, athlete.primaryEvent)),
     [athlete],
   );
 
@@ -539,12 +543,17 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
             <div>
               <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">All Times</div>
               <div className="space-y-1">
-                {eventTimes.map(({ label, timeStr, eventVerif }) => (
+                {eventTimes.map(({ label, field, course, timeStr, eventVerif }) => (
                   <div
-                    key={label}
+                    key={field}
                     className="flex items-center justify-between px-3 py-1.5 rounded-md bg-[#0A1628] border border-[#1E3A5F]"
                   >
-                    <span className="text-xs text-gray-300">{label}</span>
+                    <span className="text-xs text-gray-300 flex items-center gap-1.5">
+                      {label}
+                      <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${
+                        course === 'SCM' ? 'bg-purple-900/50 text-purple-300' : 'bg-blue-900/50 text-blue-300'
+                      }`}>{course}</span>
+                    </span>
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-sm text-white">{formatTime(timeStr)}</span>
                       {eventVerif === 'meet'  && <span className="text-[10px] text-emerald-400">✓ Meet</span>}
@@ -562,22 +571,35 @@ function AthletePanel({ athlete, note, onNoteChange, shortlists, onToggleShortli
               <div className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                 Competition History
               </div>
-              <div className="space-y-1.5">
-                {[...athlete.competitionHistory].reverse().slice(0, 5).map((comp) => (
-                  <div
-                    key={comp.id}
-                    className="flex items-center justify-between px-3 py-2 rounded-md bg-[#0A1628] border border-[#1E3A5F]"
-                  >
-                    <div>
-                      <div className="text-xs text-white font-medium">{comp.meetName}</div>
-                      <div className="text-[10px] text-gray-500">{comp.event} · {comp.date}</div>
+              <div className="space-y-2">
+                {[...athlete.competitionHistory].slice(0, 5).map((comp) => {
+                  // Normalise v1 (flat) and v2 (results[]) entries
+                  const results = Array.isArray(comp.results) && comp.results.length
+                    ? comp.results
+                    : (comp.event ? [{ event: comp.event, time: comp.time, placing: comp.placing }] : []);
+                  return (
+                    <div key={comp.id} className="px-3 py-2 rounded-md bg-[#0A1628] border border-[#1E3A5F]">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="text-xs text-white font-semibold">{comp.meetName}</div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[9px] text-gray-500">{comp.date}</span>
+                          <span className={`text-[9px] font-semibold px-1 py-0.5 rounded ${
+                            comp.course === 'SCM' ? 'bg-purple-900/50 text-purple-300' : 'bg-blue-900/50 text-blue-300'
+                          }`}>{comp.course || 'LCM'}</span>
+                        </div>
+                      </div>
+                      {results.map((r, i) => (
+                        <div key={i} className="flex items-center justify-between text-[11px] py-0.5">
+                          <span className="text-gray-400">{r.event}</span>
+                          <span className="flex items-center gap-2">
+                            <span className="font-mono text-white">{formatTime(r.time)}</span>
+                            {r.placing && <span className="text-amber-400">{r.placing}</span>}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                    <div className="text-right ml-2">
-                      <div className="font-mono text-sm text-white">{formatTime(comp.time)}</div>
-                      {comp.placing && <div className="text-[10px] text-amber-400">{comp.placing}</div>}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -731,7 +753,7 @@ function ShortlistsScreen({
                 const id = athlete.uid || athlete.id;
                 const verif = getVerificationLevel(athlete);
                 const underserved = UNDERSERVED_STATES.has(athlete.state);
-                const bestTime = getBestTimeForEvent(athlete, athlete.primaryEvent);
+                const bestTime = getBestTimeForEventAuto(athlete, athlete.primaryEvent);
                 return (
                   <div
                     key={athlete.id}
@@ -954,13 +976,18 @@ export default function ScoutApp({ uid }) {
   const filtered = athletes.filter((a) => {
     if (search && !a.name?.toLowerCase().includes(search.toLowerCase())) return false;
     if (filterEvent) {
-      const eventField = SWIM_EVENT_FIELDS[filterEvent];
-      if (!eventField || !a[eventField] || !a[eventField].trim()) return false;
-      const atSecs  = parseTime(a[eventField]);
+      // Athlete passes the event filter if they have *either* a LCM or SCM time
+      // for the event. The best of the two is used for the time-range check.
+      const lcm = getEventTime(a, filterEvent, 'LCM');
+      const scm = getEventTime(a, filterEvent, 'SCM');
+      if (!lcm?.trim() && !scm?.trim()) return false;
+      const lcmSecs = lcm ? parseTime(lcm) : null;
+      const scmSecs = scm ? parseTime(scm) : null;
+      const bestSecs = [lcmSecs, scmSecs].filter((s) => s !== null).sort((a, b) => a - b)[0];
       const minSecs = parseTime(filterTimeMin);
       const maxSecs = parseTime(filterTimeMax);
-      if (minSecs !== null && atSecs !== null && atSecs < minSecs) return false;
-      if (maxSecs !== null && atSecs !== null && atSecs > maxSecs) return false;
+      if (minSecs !== null && bestSecs !== undefined && bestSecs < minSecs) return false;
+      if (maxSecs !== null && bestSecs !== undefined && bestSecs > maxSecs) return false;
     }
     if (filterGender && a.gender?.toLowerCase() !== filterGender.toLowerCase()) return false;
     if (filterState && a.state !== filterState) return false;
