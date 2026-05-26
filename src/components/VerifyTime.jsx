@@ -8,28 +8,34 @@ import { formatTime } from '../data/swimData';
 /**
  * Public coach-facing verification page.
  *
- * Flow:
- *   1. Athlete clicks "Request Verification" next to a time → app creates
- *      verificationRequests/{token} with {athleteId, field, label, time, status}.
- *   2. Athlete shares the URL /verify/{token} with their coach via WhatsApp.
- *   3. Coach opens the URL — no account required — sees the claim and clicks
- *      "Verify" or "Reject". We update the request doc AND patch the athlete's
- *      verifications field on users/{athleteId}.
+ * Verification gate (defence-in-depth, client-side):
+ *   Coach must enter BOTH their name and their club. We compare both
+ *   (case-insensitive, trimmed) against what the athlete listed on their
+ *   SwimBlitz profile. Outcomes:
  *
- * SECURITY: Firestore rules must allow:
- *   - public read of verificationRequests/{token}
- *   - public update of verificationRequests/{token}.status
- *   - public write to users/{athleteId}.verifications.{field}
- *     (gated on a matching pending verificationRequest existing)
+ *     name OK + club OK   → verify proceeds
+ *     name BAD + club OK  → "Another coach at <club> must verify this"
+ *     name OK + club BAD  → "<athlete> listed you at a different club"
+ *     name BAD + club BAD → "You are not a verified coach for this athlete"
  *
- * Without these rules, the verify click will fail silently. The UI surfaces
- * the error so the platform owner can update Firestore rules.
+ * IMPORTANT: We never echo the expected name or club back to the visitor.
+ * Surfacing them would let any impostor copy the values directly from the
+ * page. The athlete's public profile may show coach/club, but we don't
+ * make that information easier to access from inside the verify flow.
+ *
+ * Firestore rules note:
+ *   The same caveat from the previous commit applies — public update of
+ *   verificationRequests/{token} and merge of users/{athleteId}.verifications
+ *   must be allowed (ideally gated on a pending request existing). For real
+ *   security this gate should also be enforced server-side via rules; the
+ *   client check is UX + a first hurdle.
  */
 export default function VerifyTime() {
   const { token } = useParams();
   const navigate = useNavigate();
   const [request, setRequest] = useState(null);
   const [coachName, setCoachName] = useState('');
+  const [coachClub, setCoachClub] = useState('');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
@@ -52,37 +58,71 @@ export default function VerifyTime() {
     load();
   }, [token]);
 
+  // Normalise both sides of the comparison
+  const norm = (s) => (s || '').trim().toLowerCase();
+
   const submit = async (verdict) => {
     const enteredName = coachName.trim();
+    const enteredClub = coachClub.trim();
+
     if (!enteredName) {
-      setError('Please enter your name so the athlete knows who verified.');
+      setError('Please enter your full name.');
       return;
     }
-    // Verification gate: the name entered here must match the coach the
-    // athlete listed on their profile (case-insensitive, exact otherwise).
-    // Rejecting verdicts bypasses this — anyone with the link can decline.
-    if (verdict === 'verified' && request.expectedCoach) {
-      const expected = request.expectedCoach.trim().toLowerCase();
-      if (enteredName.toLowerCase() !== expected) {
+    // For declines we only need a name (the decline still helps the athlete
+    // know the link reached someone). For verifies, club is also required.
+    if (verdict === 'verified' && !enteredClub) {
+      setError('Please enter the name of the club you coach at.');
+      return;
+    }
+
+    if (verdict === 'verified') {
+      const nameMatch = norm(enteredName) === norm(request.expectedCoach);
+      const clubMatch = norm(enteredClub) === norm(request.expectedClub);
+
+      // The athlete's listed club is the canonical name we should use in the
+      // "another coach at X" message — that's what they actually swim at.
+      const athleteClub = request.expectedClub?.trim() || enteredClub;
+
+      if (!nameMatch && !clubMatch) {
         setError(
-          `Only ${request.expectedCoach} can verify this time. ` +
-          `If you are not that coach, please ask ${request.athleteName} to update ` +
-          `their profile with the correct coach name and send a new link.`
+          `You are not a verified coach to verify this athlete's times. ` +
+          `If you believe this is wrong, ask ${request.athleteName} to update ` +
+          `their SwimBlitz profile with the correct coach and club, then send ` +
+          `you a new link.`
         );
         return;
       }
+      if (!nameMatch && clubMatch) {
+        setError(
+          `This time must be verified by another coach at ${athleteClub} — ` +
+          `specifically the coach ${request.athleteName} listed on their ` +
+          `SwimBlitz profile. If the listed coach is no longer at the club, ` +
+          `ask ${request.athleteName} to update their profile.`
+        );
+        return;
+      }
+      if (nameMatch && !clubMatch) {
+        setError(
+          `${request.athleteName} has listed you as working at a different ` +
+          `club on their SwimBlitz profile. Ask them to correct the club ` +
+          `name on their profile and send a new verification link.`
+        );
+        return;
+      }
+      // Both match — fall through to submit.
     }
+
     setSubmitting(true);
     setError(null);
     try {
-      // Update the request doc (audit trail)
       await updateDoc(doc(db, 'verificationRequests', token), {
         status: verdict,
-        verifiedBy: coachName.trim(),
+        verifiedBy: enteredName,
+        verifiedByClub: enteredClub || null,
         verifiedAt: serverTimestamp(),
       });
 
-      // If approved, write to the athlete's user doc so it shows immediately
       if (verdict === 'verified') {
         await setDoc(
           doc(db, 'users', request.athleteId),
@@ -90,7 +130,7 @@ export default function VerifyTime() {
             verifications: {
               [request.field]: {
                 status: 'coach',
-                meetName: `Verified by ${coachName.trim()}`,
+                meetName: `Verified by ${enteredName}${enteredClub ? ` (${enteredClub})` : ''}`,
                 verifiedAt: new Date().toISOString(),
               },
             },
@@ -190,27 +230,43 @@ export default function VerifyTime() {
         <div className="bg-blue-50 rounded-xl p-4 mb-5 space-y-2">
           <Row label="Athlete" value={request.athleteName} />
           <Row label="Event" value={request.label} />
-          <Row label="Claimed Time" value={<span className="text-2xl font-extrabold text-[#0B2E4E]">{formatTime(request.time)}</span>} />
+          <Row
+            label="Claimed Time"
+            value={<span className="text-2xl font-extrabold text-[#0B2E4E]">{formatTime(request.time)}</span>}
+          />
         </div>
 
-        <label className="block text-xs font-medium text-gray-600 mb-1">Your name</label>
-        <input
-          type="text"
-          value={coachName}
-          onChange={(e) => setCoachName(e.target.value)}
-          placeholder={request.expectedCoach ? `e.g. ${request.expectedCoach}` : 'e.g. Coach Anand Sharma'}
-          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-1 focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
-        />
-        {request.expectedCoach && (
-          <p className="text-[11px] text-gray-500 mb-4">
-            This time can only be verified by{' '}
-            <span className="font-semibold text-[#0B2E4E]">{request.expectedCoach}</span>{' '}
-            — the coach {request.athleteName} listed on their SwimBlitz profile.
+        <div className="space-y-3 mb-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Your full name</label>
+            <input
+              type="text"
+              value={coachName}
+              onChange={(e) => setCoachName(e.target.value)}
+              placeholder="e.g. Anand Sharma"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">Your club</label>
+            <input
+              type="text"
+              value={coachClub}
+              onChange={(e) => setCoachClub(e.target.value)}
+              placeholder="e.g. Aqua Tigers Swimming Club"
+              className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+            />
+          </div>
+          <p className="text-[11px] text-gray-500">
+            Both must match what {request.athleteName} listed on their SwimBlitz profile.
+            We don't show you the expected values — if you're the right coach, you already know them.
           </p>
-        )}
+        </div>
 
         {error && (
-          <div className="text-xs text-red-600 bg-red-50 rounded px-2 py-1.5 mb-3">{error}</div>
+          <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2.5 mb-3 leading-relaxed">
+            {error}
+          </div>
         )}
 
         <div className="flex gap-2">
@@ -244,7 +300,7 @@ export default function VerifyTime() {
 
 function FullScreen({ children }) {
   return (
-    <div className="min-h-screen bg-[#0B2E4E] flex items-center justify-center px-4">
+    <div className="min-h-screen bg-[#0B2E4E] flex items-center justify-center px-4 py-6">
       {children}
     </div>
   );

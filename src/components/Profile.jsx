@@ -224,7 +224,11 @@ function ScoutActivityCard({ formData }) {
 
 // ─── Request-verification modal (Fix 10) ─────────────────────────────────────
 
-function RequestVerifyModal({ open, onClose, athleteId, athleteName, expectedCoach, field, label, time }) {
+function RequestVerifyModal({
+  open, onClose, athleteId, athleteName,
+  expectedCoach, expectedClub,
+  field, label, time,
+}) {
   const [token, setToken] = useState(null);
   const [copied, setCopied] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -233,11 +237,17 @@ function RequestVerifyModal({ open, onClose, athleteId, athleteName, expectedCoa
   useEffect(() => {
     if (!open) return;
     setToken(null); setCopied(false); setError(null);
-    // Guardrail: only an athlete who has named their coach can request
-    // verification. The coach who opens the link will be required to enter
-    // a name that matches expectedCoach (case-insensitive).
-    if (!expectedCoach?.trim()) {
-      setError('Set your coach name in your profile before requesting verification.');
+    // Guardrail: only an athlete who has named both their coach AND their
+    // club can request verification. Verifying coaches must enter both, and
+    // both must match what the athlete listed.
+    if (!expectedCoach?.trim() || !expectedClub?.trim()) {
+      setError(
+        !expectedCoach?.trim() && !expectedClub?.trim()
+          ? 'Add your coach name and club to your profile before requesting verification.'
+          : !expectedCoach?.trim()
+            ? 'Add your coach name to your profile before requesting verification.'
+            : 'Add your club name to your profile before requesting verification.'
+      );
       return;
     }
     const create = async () => {
@@ -249,6 +259,7 @@ function RequestVerifyModal({ open, onClose, athleteId, athleteName, expectedCoa
         await setDoc(doc(db, 'verificationRequests', newToken), {
           athleteId, athleteName, field, label, time,
           expectedCoach: expectedCoach.trim(),
+          expectedClub:  expectedClub.trim(),
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
@@ -259,7 +270,7 @@ function RequestVerifyModal({ open, onClose, athleteId, athleteName, expectedCoa
       setCreating(false);
     };
     create();
-  }, [open, athleteId, athleteName, expectedCoach, field, label, time]);
+  }, [open, athleteId, athleteName, expectedCoach, expectedClub, field, label, time]);
 
   if (!open) return null;
   const url = token ? `${window.location.origin}/verify/${token}` : '';
@@ -350,6 +361,8 @@ export default function Profile({ isMyProfile }) {
   // Fix 7 — inline edit auto-save state
   const [saveState, setSaveState] = useState('idle');  // 'idle' | 'saving' | 'saved' | 'error'
   const [loaded, setLoaded] = useState(false);        // guards autosave + onboarding render
+  const [baseline, setBaseline] = useState(null);     // last-saved snapshot for dirty diff
+  const [focusedField, setFocusedField] = useState(null);  // currently-focused field name
   const saveTimer = useRef(null);                      // debounce timer
 
   // Auth listener
@@ -377,12 +390,16 @@ export default function Profile({ isMyProfile }) {
           setProfileMissing(true);
           return;
         }
-        setFormData({
+        const merged = {
           ...DEFAULT_FORM,
           ...Object.fromEntries(Object.keys(DEFAULT_FORM).map((k) => [k, d[k] ?? DEFAULT_FORM[k]])),
-        });
+        };
+        setFormData(merged);
+        if (isMyProfile) setBaseline(merged);
       } else if (isMyProfile && user) {
-        setFormData((prev) => ({ ...prev, email: user.email || '', name: user.displayName || '' }));
+        const seed = { ...DEFAULT_FORM, email: user.email || '', name: user.displayName || '' };
+        setFormData(seed);
+        setBaseline(seed);
       } else if (!isMyProfile) {
         setProfileMissing(true);
       }
@@ -410,9 +427,23 @@ export default function Profile({ isMyProfile }) {
     return errors;
   }, [formData.name, formData.state, formData.primaryEvent]);
 
+  // Fix 7: which fields have unsaved changes (compared to last-saved baseline)
+  const dirtyFields = useMemo(() => {
+    if (!baseline) return new Set();
+    const dirty = new Set();
+    for (const key of Object.keys(formData)) {
+      // Stringify so we catch nested objects/arrays too (verifications, history…)
+      if (JSON.stringify(formData[key]) !== JSON.stringify(baseline[key])) {
+        dirty.add(key);
+      }
+    }
+    return dirty;
+  }, [formData, baseline]);
+
   // Fix 7: debounced auto-save on every formData change while loaded
   useEffect(() => {
     if (!isMyProfile || !user?.uid || !loaded) return;
+    if (dirtyFields.size === 0) return;  // nothing changed → don't write
     if (saveTimer.current) clearTimeout(saveTimer.current);
     setSaveState('saving');
     saveTimer.current = setTimeout(async () => {
@@ -420,6 +451,8 @@ export default function Profile({ isMyProfile }) {
         // Bug A3: never write a non-Athlete type from this form
         const payload = { ...formData, type: 'Athlete', email: user.email };
         await setDoc(doc(db, 'users', user.uid), payload, { merge: true });
+        // Baseline catches up to the freshly-saved state → dirty becomes empty
+        setBaseline(payload);
         setSaveState('saved');
         setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 1500);
       } catch (e) {
@@ -428,7 +461,7 @@ export default function Profile({ isMyProfile }) {
       }
     }, 600);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [formData, isMyProfile, user?.uid, user?.email, loaded]);
+  }, [formData, isMyProfile, user?.uid, user?.email, loaded, dirtyFields]);
 
   // Bug A4: upload profile pic to Firebase Storage instead of stuffing base64
   // into Firestore. Falls back to a local preview while upload is in flight.
@@ -531,17 +564,36 @@ export default function Profile({ isMyProfile }) {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const inputCls = (disabled) =>
+  // Per-field visual cues (Fix 7).
+  //   - dirty   → amber left-border accent so the user sees what hasn't saved
+  //   - focused → stronger amber ring while the user is typing
+  //   - clean   → default gray
+  const cueClasses = (fieldName) => {
+    if (!isMyProfile) return '';
+    const isDirty = dirtyFields.has(fieldName);
+    const isFocused = focusedField === fieldName;
+    if (isFocused) return 'border-amber-400 ring-2 ring-amber-200';
+    if (isDirty)   return 'border-l-4 border-l-amber-400';
+    return '';
+  };
+
+  // Spread these onto any input/select/textarea to track focus state
+  const fieldHandlers = (fieldName) => ({
+    onFocus: () => setFocusedField(fieldName),
+    onBlur:  () => setFocusedField((f) => (f === fieldName ? null : f)),
+  });
+
+  const inputCls = (disabled, fieldName) =>
     `w-full p-3 rounded-lg border text-sm transition-all focus:outline-none ${
       disabled ? 'border-transparent bg-transparent text-gray-800 cursor-default'
                : 'border-gray-200 bg-white focus:ring-2 focus:ring-[#1565C0] focus:border-[#1565C0]'
-    }`;
+    } ${cueClasses(fieldName)}`;
 
-  const selectCls = (disabled) =>
+  const selectCls = (disabled, fieldName) =>
     `w-full p-3 rounded-lg border text-sm transition-all focus:outline-none ${
       disabled ? 'border-transparent bg-transparent text-gray-800 cursor-default appearance-none'
                : 'border-gray-200 bg-white focus:ring-2 focus:ring-[#1565C0]'
-    }`;
+    } ${cueClasses(fieldName)}`;
 
   // Display name — Fix 1 / Bug A1. We no longer fall back to "Unnamed Athlete";
   // if the form has no name, the profile blocks save and the UI prompts the
@@ -655,69 +707,123 @@ export default function Profile({ isMyProfile }) {
               { label: 'Height (cm)', field: 'height', placeholder: 'e.g. 178' },
               { label: 'Weight (kg)', field: 'weight', placeholder: 'e.g. 68' },
               { label: 'Wingspan (cm)', field: 'reach', placeholder: 'e.g. 185' },
-            ].map(({ label, field, placeholder }) => (
-              <div key={field} className={`rounded-xl p-3 text-center ${isMyProfile ? 'border border-gray-200' : 'bg-blue-50'}`}>
-                <div className="text-xs font-medium text-gray-500 mb-1">{label}</div>
-                {isMyProfile ? (
-                  <input
-                    type="text"
-                    value={formData[field]}
-                    onChange={(e) => setFormData((prev) => ({ ...prev, [field]: e.target.value }))}
-                    className="w-full text-center text-lg font-bold text-[#0B2E4E] focus:outline-none bg-transparent"
-                    placeholder={placeholder}
-                  />
-                ) : (
-                  <div className="text-lg font-bold text-[#0B2E4E]">{formData[field] || '—'}</div>
-                )}
-              </div>
-            ))}
+            ].map(({ label, field, placeholder }) => {
+              const isDirty = isMyProfile && dirtyFields.has(field);
+              const isFocused = focusedField === field;
+              const cardCue = isFocused
+                ? 'border-amber-400 ring-2 ring-amber-200'
+                : isDirty
+                  ? 'border-amber-400 border-l-4 border-l-amber-400'
+                  : 'border-gray-200';
+              return (
+                <div key={field} className={`relative rounded-xl p-3 text-center transition-all ${isMyProfile ? `border ${cardCue}` : 'bg-blue-50'}`}>
+                  <div className="text-xs font-medium text-gray-500 mb-1 flex items-center justify-center gap-1">
+                    <span>{label}</span>
+                    {isFocused && <span className="text-[9px] font-semibold text-amber-600 uppercase">Editing</span>}
+                  </div>
+                  {isMyProfile ? (
+                    <>
+                      <input
+                        type="text"
+                        value={formData[field]}
+                        onChange={(e) => setFormData((prev) => ({ ...prev, [field]: e.target.value }))}
+                        {...fieldHandlers(field)}
+                        className="w-full text-center text-lg font-bold text-[#0B2E4E] focus:outline-none bg-transparent"
+                        placeholder={placeholder}
+                      />
+                      {isDirty && !isFocused && (
+                        <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-500" title="Unsaved changes" />
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-lg font-bold text-[#0B2E4E]">{formData[field] || '—'}</div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-            <Field label="Full Name *" required>
+            <Field label="Full Name *" required dirty={dirtyFields.has('name')} focused={focusedField === 'name'}>
               <input
                 disabled={!isMyProfile} type="text" value={formData.name}
                 onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                className={inputCls(!isMyProfile)} placeholder="Your full name"
+                {...fieldHandlers('name')}
+                className={inputCls(!isMyProfile, 'name')} placeholder="Your full name"
               />
             </Field>
-            <Field label="Gender">
-              <select disabled={!isMyProfile} value={formData.gender} onChange={(e) => setFormData((prev) => ({ ...prev, gender: e.target.value }))} className={selectCls(!isMyProfile)}>
+            <Field label="Gender" dirty={dirtyFields.has('gender')} focused={focusedField === 'gender'}>
+              <select
+                disabled={!isMyProfile} value={formData.gender}
+                onChange={(e) => setFormData((prev) => ({ ...prev, gender: e.target.value }))}
+                {...fieldHandlers('gender')}
+                className={selectCls(!isMyProfile, 'gender')}
+              >
                 <option value="">Select gender</option>
                 <option>Male</option>
                 <option>Female</option>
                 <option>Other</option>
               </select>
             </Field>
-            <Field label="State / Region *" required>
-              <select disabled={!isMyProfile} value={formData.state} onChange={(e) => setFormData((prev) => ({ ...prev, state: e.target.value }))} className={selectCls(!isMyProfile)}>
+            <Field label="State / Region *" required dirty={dirtyFields.has('state')} focused={focusedField === 'state'}>
+              <select
+                disabled={!isMyProfile} value={formData.state}
+                onChange={(e) => setFormData((prev) => ({ ...prev, state: e.target.value }))}
+                {...fieldHandlers('state')}
+                className={selectCls(!isMyProfile, 'state')}
+              >
                 <option value="">Select state</option>
                 {INDIAN_STATES.map((s) => <option key={s}>{s}</option>)}
               </select>
             </Field>
-            <Field label="City">
-              <input disabled={!isMyProfile} type="text" value={formData.city} onChange={(e) => setFormData((prev) => ({ ...prev, city: e.target.value }))} className={inputCls(!isMyProfile)} placeholder="e.g. Pune" />
+            <Field label="City" dirty={dirtyFields.has('city')} focused={focusedField === 'city'}>
+              <input
+                disabled={!isMyProfile} type="text" value={formData.city}
+                onChange={(e) => setFormData((prev) => ({ ...prev, city: e.target.value }))}
+                {...fieldHandlers('city')}
+                className={inputCls(!isMyProfile, 'city')} placeholder="e.g. Pune"
+              />
             </Field>
-            <Field label="Club Name">
-              <input disabled={!isMyProfile} type="text" value={formData.clubName} onChange={(e) => setFormData((prev) => ({ ...prev, clubName: e.target.value }))} className={inputCls(!isMyProfile)} placeholder="e.g. Aqua Tigers Swimming Club" />
+            <Field label="Club Name" dirty={dirtyFields.has('clubName')} focused={focusedField === 'clubName'}>
+              <input
+                disabled={!isMyProfile} type="text" value={formData.clubName}
+                onChange={(e) => setFormData((prev) => ({ ...prev, clubName: e.target.value }))}
+                {...fieldHandlers('clubName')}
+                className={inputCls(!isMyProfile, 'clubName')} placeholder="e.g. Aqua Tigers Swimming Club"
+              />
             </Field>
-            <Field label="Coach Name">
-              <input disabled={!isMyProfile} type="text" value={formData.coachName} onChange={(e) => setFormData((prev) => ({ ...prev, coachName: e.target.value }))} className={inputCls(!isMyProfile)} placeholder="Coach's full name" />
+            <Field label="Coach Name" dirty={dirtyFields.has('coachName')} focused={focusedField === 'coachName'}>
+              <input
+                disabled={!isMyProfile} type="text" value={formData.coachName}
+                onChange={(e) => setFormData((prev) => ({ ...prev, coachName: e.target.value }))}
+                {...fieldHandlers('coachName')}
+                className={inputCls(!isMyProfile, 'coachName')} placeholder="Coach's full name"
+              />
             </Field>
             <div className="md:col-span-2">
-              <Field label={<>Contact Email <span className="text-amber-600 font-normal">(visible to scouts)</span></>}>
+              <Field
+                label={<>Contact Email <span className="text-amber-600 font-normal">(visible to scouts)</span></>}
+                dirty={dirtyFields.has('contactEmail')} focused={focusedField === 'contactEmail'}
+              >
                 <input
                   disabled={!isMyProfile} type="email" value={formData.contactEmail}
                   onChange={(e) => setFormData((prev) => ({ ...prev, contactEmail: e.target.value }))}
-                  className={inputCls(!isMyProfile)}
+                  {...fieldHandlers('contactEmail')}
+                  className={inputCls(!isMyProfile, 'contactEmail')}
                   placeholder="contact@example.com — the email scouts should use to reach you"
                 />
               </Field>
             </div>
           </div>
 
-          <Field label="Bio">
-            <textarea disabled={!isMyProfile} value={formData.bio} onChange={(e) => setFormData((prev) => ({ ...prev, bio: e.target.value }))} className={`${inputCls(!isMyProfile)} resize-none`} rows={2} placeholder="Short bio — your goals, background, current training focus..." />
+          <Field label="Bio" dirty={dirtyFields.has('bio')} focused={focusedField === 'bio'}>
+            <textarea
+              disabled={!isMyProfile} value={formData.bio}
+              onChange={(e) => setFormData((prev) => ({ ...prev, bio: e.target.value }))}
+              {...fieldHandlers('bio')}
+              className={`${inputCls(!isMyProfile, 'bio')} resize-none`} rows={2}
+              placeholder="Short bio — your goals, background, current training focus..."
+            />
           </Field>
         </div>
 
@@ -725,14 +831,24 @@ export default function Profile({ isMyProfile }) {
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Event Specialization</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Primary Event *" required>
-              <select disabled={!isMyProfile} value={formData.primaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, primaryEvent: e.target.value }))} className={selectCls(!isMyProfile)}>
+            <Field label="Primary Event *" required dirty={dirtyFields.has('primaryEvent')} focused={focusedField === 'primaryEvent'}>
+              <select
+                disabled={!isMyProfile} value={formData.primaryEvent}
+                onChange={(e) => setFormData((prev) => ({ ...prev, primaryEvent: e.target.value }))}
+                {...fieldHandlers('primaryEvent')}
+                className={selectCls(!isMyProfile, 'primaryEvent')}
+              >
                 <option value="">Select primary event</option>
                 {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
               </select>
             </Field>
-            <Field label="Secondary Event">
-              <select disabled={!isMyProfile} value={formData.secondaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, secondaryEvent: e.target.value }))} className={selectCls(!isMyProfile)}>
+            <Field label="Secondary Event" dirty={dirtyFields.has('secondaryEvent')} focused={focusedField === 'secondaryEvent'}>
+              <select
+                disabled={!isMyProfile} value={formData.secondaryEvent}
+                onChange={(e) => setFormData((prev) => ({ ...prev, secondaryEvent: e.target.value }))}
+                {...fieldHandlers('secondaryEvent')}
+                className={selectCls(!isMyProfile, 'secondaryEvent')}
+              >
                 <option value="">Select secondary event</option>
                 {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
               </select>
@@ -758,16 +874,35 @@ export default function Profile({ isMyProfile }) {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
               {SWIM_EVENTS.map(({ label, field }) => {
                 const verif = formData.verifications?.[field] || {};
+                const isDirty = dirtyFields.has(field);
+                const isFocused = focusedField === field;
+                const cardCue = isFocused
+                  ? 'border-amber-400 ring-2 ring-amber-200'
+                  : isDirty
+                    ? 'border-amber-400 border-l-4 border-l-amber-400'
+                    : 'border-gray-100';
                 return (
-                  <div key={field} className="border border-gray-100 rounded-xl p-3">
-                    <div className="text-xs font-medium text-gray-600 mb-2">{label}</div>
-                    <SmartTimeInput
-                      value={formData[field]}
-                      onChange={(v) => setFormData((prev) => ({ ...prev, [field]: v }))}
-                      event={label}
-                      gender={formData.gender}
-                      className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#1565C0] mb-1"
-                    />
+                  <div key={field} className={`relative border rounded-xl p-3 transition-all ${cardCue}`}>
+                    <div className="text-xs font-medium text-gray-600 mb-2 flex items-center gap-1.5">
+                      <span>{label}</span>
+                      {isFocused && (
+                        <span className="text-[9px] font-semibold text-amber-600 uppercase tracking-wide">Editing</span>
+                      )}
+                      {!isFocused && isDirty && (
+                        <span className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+                          <span className="w-1 h-1 rounded-full bg-amber-500" /> Unsaved
+                        </span>
+                      )}
+                    </div>
+                    <div {...fieldHandlers(field)}>
+                      <SmartTimeInput
+                        value={formData[field]}
+                        onChange={(v) => setFormData((prev) => ({ ...prev, [field]: v }))}
+                        event={label}
+                        gender={formData.gender}
+                        className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#1565C0] mb-1"
+                      />
+                    </div>
                     {formData[field] && (
                       <div className="space-y-1 mt-2">
                         <select
@@ -989,6 +1124,7 @@ export default function Profile({ isMyProfile }) {
         athleteId={user?.uid}
         athleteName={formData.name || 'An athlete'}
         expectedCoach={formData.coachName}
+        expectedClub={formData.clubName}
         field={verifyTarget?.field}
         label={verifyTarget?.label}
         time={verifyTarget?.time}
@@ -1016,11 +1152,21 @@ function SaveStatePill({ state }) {
 
 // ── Small layout helper ────────────────────────────────────────────────────
 
-function Field({ label, required, children }) {
+function Field({ label, required, dirty, focused, children }) {
   return (
     <div>
-      <label className={`block text-xs font-medium mb-1 ${required ? 'text-[#0B2E4E]' : 'text-gray-500'}`}>
-        {label}
+      <label className={`flex items-center gap-1.5 text-xs font-medium mb-1 ${required ? 'text-[#0B2E4E]' : 'text-gray-500'}`}>
+        <span>{label}</span>
+        {focused && (
+          <span className="text-[10px] font-semibold text-amber-600 uppercase tracking-wide">
+            Editing
+          </span>
+        )}
+        {!focused && dirty && (
+          <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" /> Unsaved
+          </span>
+        )}
       </label>
       {children}
     </div>
