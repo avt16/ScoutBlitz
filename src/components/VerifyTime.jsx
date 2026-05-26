@@ -53,9 +53,24 @@ export default function VerifyTime() {
   }, [token]);
 
   const submit = async (verdict) => {
-    if (!coachName.trim()) {
+    const enteredName = coachName.trim();
+    if (!enteredName) {
       setError('Please enter your name so the athlete knows who verified.');
       return;
+    }
+    // Verification gate: the name entered here must match the coach the
+    // athlete listed on their profile (case-insensitive, exact otherwise).
+    // Rejecting verdicts bypasses this — anyone with the link can decline.
+    if (verdict === 'verified' && request.expectedCoach) {
+      const expected = request.expectedCoach.trim().toLowerCase();
+      if (enteredName.toLowerCase() !== expected) {
+        setError(
+          `Only ${request.expectedCoach} can verify this time. ` +
+          `If you are not that coach, please ask ${request.athleteName} to update ` +
+          `their profile with the correct coach name and send a new link.`
+        );
+        return;
+      }
     }
     setSubmitting(true);
     setError(null);
@@ -183,9 +198,16 @@ export default function VerifyTime() {
           type="text"
           value={coachName}
           onChange={(e) => setCoachName(e.target.value)}
-          placeholder="e.g. Coach Anand Sharma"
-          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
+          placeholder={request.expectedCoach ? `e.g. ${request.expectedCoach}` : 'e.g. Coach Anand Sharma'}
+          className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm mb-1 focus:outline-none focus:ring-2 focus:ring-[#1565C0]"
         />
+        {request.expectedCoach && (
+          <p className="text-[11px] text-gray-500 mb-4">
+            This time can only be verified by{' '}
+            <span className="font-semibold text-[#0B2E4E]">{request.expectedCoach}</span>{' '}
+            — the coach {request.athleteName} listed on their SwimBlitz profile.
+          </p>
+        )}
 
         {error && (
           <div className="text-xs text-red-600 bg-red-50 rounded px-2 py-1.5 mb-3">{error}</div>

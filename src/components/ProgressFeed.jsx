@@ -450,9 +450,9 @@ export default function ProgressFeed() {
   const pct       = Math.round((metCount / completionCriteria.length) * 100);
 
   return (
-    <div className="flex flex-col min-h-screen bg-[#F0F7FF]">
+    <div className="flex flex-col min-h-screen bg-[#F0F7FF] pb-20 md:pb-0">
       <Header />
-      <div className="container mx-auto max-w-2xl px-4 py-8">
+      <div className="container mx-auto max-w-2xl px-4 py-6 md:py-8">
 
         {/* Page header */}
         <div className="mb-6">

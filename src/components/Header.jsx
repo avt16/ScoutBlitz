@@ -77,8 +77,8 @@ function Header() {
             <Search size={18} className="absolute left-3 top-2.5 text-blue-300 pointer-events-none" />
           </div>
 
-          {/* Nav */}
-          <nav className="flex items-center gap-1 shrink-0">
+          {/* Nav — hidden on mobile (BottomTabBar takes over there) */}
+          <nav className="hidden md:flex items-center gap-1 shrink-0">
             {/* My Progress — athletes only */}
             {isAthlete && (
               <button

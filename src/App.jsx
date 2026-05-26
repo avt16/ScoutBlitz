@@ -12,6 +12,7 @@ import Profile from './components/Profile';
 import ProgressFeed from './components/ProgressFeed';
 import ScoutApp from './components/ScoutApp';
 import VerifyTime from './components/VerifyTime';
+import BottomTabBar from './components/BottomTabBar';
 import { UserContext } from './context/UserContext';
 
 // ─── Loading splash ───────────────────────────────────────────────────────────
@@ -92,26 +93,29 @@ function App() {
 
 function AthleteRoutes({ isAthlete, setUserType }) {
   return (
-    <Routes>
-      <Route path="/"              element={<HomePage />} />
-      <Route path="/login"         element={<Login setUserType={setUserType} />} />
-      <Route path="/signup"        element={<SignUp setUserType={setUserType} />} />
-      <Route path="/forgotPassword" element={<ForgotPassword />} />
+    <>
+      <Routes>
+        <Route path="/"              element={<HomePage />} />
+        <Route path="/login"         element={<Login setUserType={setUserType} />} />
+        <Route path="/signup"        element={<SignUp setUserType={setUserType} />} />
+        <Route path="/forgotPassword" element={<ForgotPassword />} />
 
-      <Route
-        path="/profile"
-        element={isAthlete ? <Profile isMyProfile={true} /> : <Navigate to="/login" replace />}
-      />
-      <Route path="/profile/:userId" element={<Profile isMyProfile={false} />} />
-      <Route
-        path="/progress"
-        element={isAthlete ? <ProgressFeed /> : <Navigate to="/login" replace />}
-      />
+        <Route
+          path="/profile"
+          element={isAthlete ? <Profile isMyProfile={true} /> : <Navigate to="/login" replace />}
+        />
+        <Route path="/profile/:userId" element={<Profile isMyProfile={false} />} />
+        <Route
+          path="/progress"
+          element={isAthlete ? <ProgressFeed /> : <Navigate to="/login" replace />}
+        />
 
-      <Route path="/feed"      element={<Navigate to="/progress" replace />} />
-      <Route path="/discovery" element={<Navigate to="/" replace />} />
-      <Route path="*"          element={<Navigate to="/" replace />} />
-    </Routes>
+        <Route path="/feed"      element={<Navigate to="/progress" replace />} />
+        <Route path="/discovery" element={<Navigate to="/" replace />} />
+        <Route path="*"          element={<Navigate to="/" replace />} />
+      </Routes>
+      <BottomTabBar />
+    </>
   );
 }
 

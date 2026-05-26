@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import Header from './Header';
 import { IoCamera } from 'react-icons/io5';
 import { Avatar, AvatarImage, AvatarFallback } from './ui/avatar';
-import { setDoc, doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { setDoc, doc, getDoc } from 'firebase/firestore';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from './ui/button';
 import { db, storage } from './FireBase';
@@ -18,6 +18,7 @@ import {
   parseTime, fmtSecs, formatTime,
 } from '../data/swimData';
 import SmartTimeInput from './SmartTimeInput';
+import Onboarding from './Onboarding';
 
 // ─── Module-level constants (don't recreate on every render — bug A7) ────────
 
@@ -42,6 +43,8 @@ const DEFAULT_FORM = {
   profileViews: 0,
   profileViewsThisWeek: 0,
   profileViewEvents: [],
+  // Onboarding state (Fix 5)
+  onboardingCompleted: false,
 };
 
 const PLACE_COLORS = {
@@ -221,7 +224,7 @@ function ScoutActivityCard({ formData }) {
 
 // ─── Request-verification modal (Fix 10) ─────────────────────────────────────
 
-function RequestVerifyModal({ open, onClose, athleteId, athleteName, field, label, time }) {
+function RequestVerifyModal({ open, onClose, athleteId, athleteName, expectedCoach, field, label, time }) {
   const [token, setToken] = useState(null);
   const [copied, setCopied] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -230,6 +233,13 @@ function RequestVerifyModal({ open, onClose, athleteId, athleteName, field, labe
   useEffect(() => {
     if (!open) return;
     setToken(null); setCopied(false); setError(null);
+    // Guardrail: only an athlete who has named their coach can request
+    // verification. The coach who opens the link will be required to enter
+    // a name that matches expectedCoach (case-insensitive).
+    if (!expectedCoach?.trim()) {
+      setError('Set your coach name in your profile before requesting verification.');
+      return;
+    }
     const create = async () => {
       setCreating(true);
       try {
@@ -238,6 +248,7 @@ function RequestVerifyModal({ open, onClose, athleteId, athleteName, field, labe
           : Math.random().toString(36).slice(2) + Date.now().toString(36);
         await setDoc(doc(db, 'verificationRequests', newToken), {
           athleteId, athleteName, field, label, time,
+          expectedCoach: expectedCoach.trim(),
           status: 'pending',
           createdAt: new Date().toISOString(),
         });
@@ -248,7 +259,7 @@ function RequestVerifyModal({ open, onClose, athleteId, athleteName, field, labe
       setCreating(false);
     };
     create();
-  }, [open, athleteId, athleteName, field, label, time]);
+  }, [open, athleteId, athleteName, expectedCoach, field, label, time]);
 
   if (!open) return null;
   const url = token ? `${window.location.origin}/verify/${token}` : '';
@@ -326,7 +337,6 @@ export default function Profile({ isMyProfile }) {
   const navigate = useNavigate();
   const { userId } = useParams();
   const [user, setUser] = useState(null);
-  const [editing, setEditing] = useState(false);
   const [formData, setFormData] = useState(DEFAULT_FORM);
   const [uploading, setUploading] = useState(false);
   const [showUploadModal, setShowUploadModal] = useState(false);
@@ -334,9 +344,13 @@ export default function Profile({ isMyProfile }) {
   const [pendingUploads, setPendingUploads] = useState([]);
   const [uploadType, setUploadType] = useState('');
   const [newComp, setNewComp] = useState({ meetName: '', date: '', event: '', placing: '', time: '' });
-  const [saveErrors, setSaveErrors] = useState([]);
   const [profileMissing, setProfileMissing] = useState(false);  // Bug A8 — invalid /:userId
   const [verifyTarget, setVerifyTarget] = useState(null);       // {field, label, time}
+
+  // Fix 7 — inline edit auto-save state
+  const [saveState, setSaveState] = useState('idle');  // 'idle' | 'saving' | 'saved' | 'error'
+  const [loaded, setLoaded] = useState(false);        // guards autosave + onboarding render
+  const saveTimer = useRef(null);                      // debounce timer
 
   // Auth listener
   useEffect(() => {
@@ -372,6 +386,8 @@ export default function Profile({ isMyProfile }) {
       } else if (!isMyProfile) {
         setProfileMissing(true);
       }
+      // Allow auto-save now that initial data has loaded (Fix 7)
+      if (isMyProfile) setLoaded(true);
     };
     if ((isMyProfile && user) || (!isMyProfile && userId)) fetchUser();
   }, [user, userId, isMyProfile, navigate]);
@@ -385,28 +401,34 @@ export default function Profile({ isMyProfile }) {
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  // Fix 1: validate mandatory fields before save
-  const validateForSave = useCallback(() => {
+  // Fix 1: validation list — surfaced as a banner, not a blocker
+  const missingFields = useMemo(() => {
     const errors = [];
-    if (!formData.name?.trim())        errors.push('Name is required.');
-    if (!formData.state)               errors.push('State is required.');
-    if (!formData.primaryEvent)        errors.push('Primary event is required.');
+    if (!formData.name?.trim())   errors.push('Name');
+    if (!formData.state)          errors.push('State');
+    if (!formData.primaryEvent)   errors.push('Primary event');
     return errors;
-  }, [formData]);
+  }, [formData.name, formData.state, formData.primaryEvent]);
 
-  const saveProfile = async () => {
-    if (!user?.uid) return;
-    const errors = validateForSave();
-    if (errors.length) {
-      setSaveErrors(errors);
-      return;
-    }
-    setSaveErrors([]);
-    // Bug A3: never write a non-Athlete type from this form
-    const payload = { ...formData, type: 'Athlete', email: user.email };
-    await setDoc(doc(db, 'users', user.uid), payload, { merge: true });
-    setEditing(false);
-  };
+  // Fix 7: debounced auto-save on every formData change while loaded
+  useEffect(() => {
+    if (!isMyProfile || !user?.uid || !loaded) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSaveState('saving');
+    saveTimer.current = setTimeout(async () => {
+      try {
+        // Bug A3: never write a non-Athlete type from this form
+        const payload = { ...formData, type: 'Athlete', email: user.email };
+        await setDoc(doc(db, 'users', user.uid), payload, { merge: true });
+        setSaveState('saved');
+        setTimeout(() => setSaveState((s) => (s === 'saved' ? 'idle' : s)), 1500);
+      } catch (e) {
+        console.error('Auto-save failed', e);
+        setSaveState('error');
+      }
+    }, 600);
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
+  }, [formData, isMyProfile, user?.uid, user?.email, loaded]);
 
   // Bug A4: upload profile pic to Firebase Storage instead of stuffing base64
   // into Firestore. Falls back to a local preview while upload is in flight.
@@ -526,21 +548,33 @@ export default function Profile({ isMyProfile }) {
   // user to complete it.
   const displayName = formData.name?.trim() || (isMyProfile ? 'Your profile is incomplete' : 'Athlete');
 
-  return (
-    <div className="flex flex-col min-h-screen bg-[#F0F7FF]">
-      <Header />
-      <div className="container mx-auto max-w-4xl px-4 py-8 space-y-6">
+  // Onboarding wizard — runs once on first profile visit (Fix 5)
+  const showOnboarding = isMyProfile && user?.uid && loaded && !formData.onboardingCompleted;
 
-        {/* ── Validation banner (Fix 1) ──────────────────────────────────── */}
-        {isMyProfile && editing && saveErrors.length > 0 && (
-          <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+  return (
+    <div className="flex flex-col min-h-screen bg-[#F0F7FF] pb-20 md:pb-0">
+      {showOnboarding && (
+        <Onboarding
+          uid={user.uid}
+          initialData={formData}
+          onComplete={(writeback) => setFormData((prev) => ({ ...prev, ...writeback }))}
+        />
+      )}
+      <Header />
+      <div className="container mx-auto max-w-4xl px-4 py-6 md:py-8 space-y-4 md:space-y-6">
+
+        {/* ── Incomplete-profile banner (Fix 1, always-on with inline edit) */}
+        {isMyProfile && missingFields.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
             <div className="flex items-start gap-2">
-              <AlertCircle size={18} className="text-red-600 shrink-0 mt-0.5" />
+              <AlertCircle size={18} className="text-amber-700 shrink-0 mt-0.5" />
               <div>
-                <p className="text-sm font-semibold text-red-700">Please complete required fields before saving:</p>
-                <ul className="mt-1 text-xs text-red-700 list-disc list-inside">
-                  {saveErrors.map((err) => <li key={err}>{err}</li>)}
-                </ul>
+                <p className="text-sm font-semibold text-amber-800">
+                  Your profile is incomplete. Scouts can't find you until you add:
+                </p>
+                <p className="mt-0.5 text-xs text-amber-700">
+                  {missingFields.join(' · ')}
+                </p>
               </div>
             </div>
           </div>
@@ -596,20 +630,8 @@ export default function Profile({ isMyProfile }) {
                 )}
               </div>
 
-              <div className="flex gap-2 shrink-0">
-                {isMyProfile && (
-                  <Button
-                    onClick={() => (editing ? saveProfile() : setEditing(true))}
-                    className="bg-[#0B2E4E] text-white hover:bg-[#0d3a5c] text-sm"
-                  >
-                    {editing ? 'Save Profile' : 'Edit Profile'}
-                  </Button>
-                )}
-                {editing && (
-                  <Button onClick={() => { setEditing(false); setSaveErrors([]); }} variant="outline" className="text-sm">
-                    Cancel
-                  </Button>
-                )}
+              <div className="flex gap-2 shrink-0 items-center">
+                {isMyProfile && <SaveStatePill state={saveState} />}
               </div>
             </div>
           </div>
@@ -634,9 +656,9 @@ export default function Profile({ isMyProfile }) {
               { label: 'Weight (kg)', field: 'weight', placeholder: 'e.g. 68' },
               { label: 'Wingspan (cm)', field: 'reach', placeholder: 'e.g. 185' },
             ].map(({ label, field, placeholder }) => (
-              <div key={field} className={`rounded-xl p-3 text-center ${editing ? 'border border-gray-200' : 'bg-blue-50'}`}>
+              <div key={field} className={`rounded-xl p-3 text-center ${isMyProfile ? 'border border-gray-200' : 'bg-blue-50'}`}>
                 <div className="text-xs font-medium text-gray-500 mb-1">{label}</div>
-                {editing ? (
+                {isMyProfile ? (
                   <input
                     type="text"
                     value={formData[field]}
@@ -654,13 +676,13 @@ export default function Profile({ isMyProfile }) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
             <Field label="Full Name *" required>
               <input
-                disabled={!editing} type="text" value={formData.name}
+                disabled={!isMyProfile} type="text" value={formData.name}
                 onChange={(e) => setFormData((prev) => ({ ...prev, name: e.target.value }))}
-                className={inputCls(!editing)} placeholder="Your full name"
+                className={inputCls(!isMyProfile)} placeholder="Your full name"
               />
             </Field>
             <Field label="Gender">
-              <select disabled={!editing} value={formData.gender} onChange={(e) => setFormData((prev) => ({ ...prev, gender: e.target.value }))} className={selectCls(!editing)}>
+              <select disabled={!isMyProfile} value={formData.gender} onChange={(e) => setFormData((prev) => ({ ...prev, gender: e.target.value }))} className={selectCls(!isMyProfile)}>
                 <option value="">Select gender</option>
                 <option>Male</option>
                 <option>Female</option>
@@ -668,26 +690,26 @@ export default function Profile({ isMyProfile }) {
               </select>
             </Field>
             <Field label="State / Region *" required>
-              <select disabled={!editing} value={formData.state} onChange={(e) => setFormData((prev) => ({ ...prev, state: e.target.value }))} className={selectCls(!editing)}>
+              <select disabled={!isMyProfile} value={formData.state} onChange={(e) => setFormData((prev) => ({ ...prev, state: e.target.value }))} className={selectCls(!isMyProfile)}>
                 <option value="">Select state</option>
                 {INDIAN_STATES.map((s) => <option key={s}>{s}</option>)}
               </select>
             </Field>
             <Field label="City">
-              <input disabled={!editing} type="text" value={formData.city} onChange={(e) => setFormData((prev) => ({ ...prev, city: e.target.value }))} className={inputCls(!editing)} placeholder="e.g. Pune" />
+              <input disabled={!isMyProfile} type="text" value={formData.city} onChange={(e) => setFormData((prev) => ({ ...prev, city: e.target.value }))} className={inputCls(!isMyProfile)} placeholder="e.g. Pune" />
             </Field>
             <Field label="Club Name">
-              <input disabled={!editing} type="text" value={formData.clubName} onChange={(e) => setFormData((prev) => ({ ...prev, clubName: e.target.value }))} className={inputCls(!editing)} placeholder="e.g. Aqua Tigers Swimming Club" />
+              <input disabled={!isMyProfile} type="text" value={formData.clubName} onChange={(e) => setFormData((prev) => ({ ...prev, clubName: e.target.value }))} className={inputCls(!isMyProfile)} placeholder="e.g. Aqua Tigers Swimming Club" />
             </Field>
             <Field label="Coach Name">
-              <input disabled={!editing} type="text" value={formData.coachName} onChange={(e) => setFormData((prev) => ({ ...prev, coachName: e.target.value }))} className={inputCls(!editing)} placeholder="Coach's full name" />
+              <input disabled={!isMyProfile} type="text" value={formData.coachName} onChange={(e) => setFormData((prev) => ({ ...prev, coachName: e.target.value }))} className={inputCls(!isMyProfile)} placeholder="Coach's full name" />
             </Field>
             <div className="md:col-span-2">
               <Field label={<>Contact Email <span className="text-amber-600 font-normal">(visible to scouts)</span></>}>
                 <input
-                  disabled={!editing} type="email" value={formData.contactEmail}
+                  disabled={!isMyProfile} type="email" value={formData.contactEmail}
                   onChange={(e) => setFormData((prev) => ({ ...prev, contactEmail: e.target.value }))}
-                  className={inputCls(!editing)}
+                  className={inputCls(!isMyProfile)}
                   placeholder="contact@example.com — the email scouts should use to reach you"
                 />
               </Field>
@@ -695,7 +717,7 @@ export default function Profile({ isMyProfile }) {
           </div>
 
           <Field label="Bio">
-            <textarea disabled={!editing} value={formData.bio} onChange={(e) => setFormData((prev) => ({ ...prev, bio: e.target.value }))} className={`${inputCls(!editing)} resize-none`} rows={2} placeholder="Short bio — your goals, background, current training focus..." />
+            <textarea disabled={!isMyProfile} value={formData.bio} onChange={(e) => setFormData((prev) => ({ ...prev, bio: e.target.value }))} className={`${inputCls(!isMyProfile)} resize-none`} rows={2} placeholder="Short bio — your goals, background, current training focus..." />
           </Field>
         </div>
 
@@ -704,13 +726,13 @@ export default function Profile({ isMyProfile }) {
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Event Specialization</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label="Primary Event *" required>
-              <select disabled={!editing} value={formData.primaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, primaryEvent: e.target.value }))} className={selectCls(!editing)}>
+              <select disabled={!isMyProfile} value={formData.primaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, primaryEvent: e.target.value }))} className={selectCls(!isMyProfile)}>
                 <option value="">Select primary event</option>
                 {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
               </select>
             </Field>
             <Field label="Secondary Event">
-              <select disabled={!editing} value={formData.secondaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, secondaryEvent: e.target.value }))} className={selectCls(!editing)}>
+              <select disabled={!isMyProfile} value={formData.secondaryEvent} onChange={(e) => setFormData((prev) => ({ ...prev, secondaryEvent: e.target.value }))} className={selectCls(!isMyProfile)}>
                 <option value="">Select secondary event</option>
                 {SWIM_EVENTS.map((e) => <option key={e.label}>{e.label}</option>)}
               </select>
@@ -732,7 +754,7 @@ export default function Profile({ isMyProfile }) {
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Swim Times</h3>
 
           {/* Smart time entry grid */}
-          {editing && (
+          {isMyProfile && (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6">
               {SWIM_EVENTS.map(({ label, field }) => {
                 const verif = formData.verifications?.[field] || {};
@@ -821,7 +843,7 @@ export default function Profile({ isMyProfile }) {
             </div>
           ) : (
             <div className="text-center py-8 text-gray-400">
-              {editing ? 'Enter your swim times above to build your profile.' : 'No times recorded yet.'}
+              {isMyProfile ? 'Enter your swim times above to build your profile.' : 'No times recorded yet.'}
             </div>
           )}
         </div>
@@ -830,7 +852,7 @@ export default function Profile({ isMyProfile }) {
         <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
           <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Competition History</h3>
 
-          {editing && (
+          {isMyProfile && (
             <div className="bg-blue-50 rounded-xl p-4 mb-4">
               <div className="text-xs font-medium text-gray-600 mb-3">Add Competition Result</div>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mb-2">
@@ -859,7 +881,7 @@ export default function Profile({ isMyProfile }) {
                     <th className="pb-2 pr-4">Event</th>
                     <th className="pb-2 pr-4">Place</th>
                     <th className="pb-2 pr-4">Time</th>
-                    {editing && <th className="pb-2" />}
+                    {isMyProfile && <th className="pb-2" />}
                   </tr>
                 </thead>
                 <tbody>
@@ -876,7 +898,7 @@ export default function Profile({ isMyProfile }) {
                           </span>
                         </td>
                         <td className="py-2.5 pr-4 font-bold text-[#0B2E4E]">{formatTime(c.time)}</td>
-                        {editing && (
+                        {isMyProfile && (
                           <td className="py-2.5">
                             <button onClick={() => removeCompetition(c.id)} className="text-gray-400 hover:text-red-500 transition-colors">
                               <X size={14} />
@@ -891,17 +913,17 @@ export default function Profile({ isMyProfile }) {
             </div>
           ) : (
             <div className="text-center py-8 text-gray-400 text-sm">
-              {editing ? 'Add competition results using the form above.' : 'No competition history recorded.'}
+              {isMyProfile ? 'Add competition results using the form above.' : 'No competition history recorded.'}
             </div>
           )}
         </div>
 
         {/* ── Media ─────────────────────────────────────────────────────── */}
-        {(formData.videos?.length > 0 || formData.photos?.length > 0 || (isMyProfile && editing)) && (
+        {(formData.videos?.length > 0 || formData.photos?.length > 0 || isMyProfile) && (
           <div className="bg-white rounded-2xl shadow-sm border border-blue-100 p-6">
             <h3 className="text-sm font-bold text-[#0B2E4E] uppercase tracking-wider mb-4">Video Highlights & Photos</h3>
 
-            {isMyProfile && editing && (
+            {isMyProfile && (
               <div className="flex gap-3 mb-4">
                 <label className="flex items-center gap-2 cursor-pointer text-[#1565C0] text-sm font-medium hover:text-[#0B2E4E]">
                   <CgSoftwareUpload size={18} /> Upload Video
@@ -966,11 +988,29 @@ export default function Profile({ isMyProfile }) {
         onClose={() => setVerifyTarget(null)}
         athleteId={user?.uid}
         athleteName={formData.name || 'An athlete'}
+        expectedCoach={formData.coachName}
         field={verifyTarget?.field}
         label={verifyTarget?.label}
         time={verifyTarget?.time}
       />
     </div>
+  );
+}
+
+// ── Save-state pill (Fix 7) ────────────────────────────────────────────────
+
+function SaveStatePill({ state }) {
+  if (state === 'idle') return null;
+  const styles = {
+    saving: { bg: 'bg-blue-100', text: 'text-blue-700', label: 'Saving…' },
+    saved:  { bg: 'bg-green-100', text: 'text-green-700', label: '✓ Saved' },
+    error:  { bg: 'bg-red-100', text: 'text-red-700', label: 'Save failed' },
+  };
+  const s = styles[state] || styles.saving;
+  return (
+    <span className={`inline-flex items-center gap-1 ${s.bg} ${s.text} text-xs font-medium px-2.5 py-1 rounded-full`}>
+      {s.label}
+    </span>
   );
 }
 
