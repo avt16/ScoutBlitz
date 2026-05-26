@@ -23,6 +23,7 @@ import {
 } from '../data/swimData';
 import SmartTimeInput from './SmartTimeInput';
 import Onboarding from './Onboarding';
+import { findMeetMatch, isMeetVerified } from '../data/meetsDatabase';
 
 // ─── Module-level constants (don't recreate on every render — bug A7) ────────
 
@@ -593,27 +594,34 @@ function AddCompetitionForm({ newComp, setNewComp, toggleNewCompEvent, updateNew
 // ─── Competition entry card (display) ────────────────────────────────────────
 
 function CompetitionEntryCard({ entry, gender, isMyProfile, onRemove }) {
+  const venue = entry.verifiedMeet
+    ? [entry.verifiedMeet.city, entry.verifiedMeet.state].filter(Boolean).join(', ')
+    : null;
+
   return (
     <div className="border border-gray-100 rounded-xl p-4 hover:border-blue-200 transition-colors">
       <div className="flex flex-wrap items-start justify-between gap-2 mb-2">
         <div>
           <div className="font-semibold text-[#0B2E4E] text-sm">{entry.meetName}</div>
-          <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2">
+          <div className="text-xs text-gray-500 flex flex-wrap items-center gap-2 mt-0.5">
             {entry.date && <span>{entry.date}</span>}
+            {venue && <span>· {venue}</span>}
             <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
               entry.course === 'SCM' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
             }`}>
               {entry.course || 'LCM'}
             </span>
-            {/* Item #9 stub — explanatory message when not yet verified */}
             {entry.verified ? (
-              <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded">
+              <span
+                className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-green-700 bg-green-100 px-1.5 py-0.5 rounded"
+                title={entry.verifiedMeet ? `Matched our database entry: ${entry.verifiedMeet.name}` : 'Verified meet'}
+              >
                 <ShieldCheck size={9} /> Verified Meet
               </span>
             ) : (
               <span
                 className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded"
-                title="We couldn't find this competition in our database of recent Indian meets."
+                title="This meet isn't in our database of recent Indian swimming competitions. The result still counts on your profile, but scouts may give it less weight than verified meets."
               >
                 <AlertCircle size={9} /> Unverified
               </span>
@@ -997,12 +1005,19 @@ export default function Profile({ isMyProfile }) {
     }
     if (results.length === 0) return;
 
+    // Item #9 — auto-verify against our meets database
+    const match = findMeetMatch(newComp.meetName, newComp.date);
     const newEntry = {
       id:       Date.now().toString(),
       meetName: newComp.meetName.trim(),
       date:     newComp.date || '',
       course:   newComp.course || 'LCM',
-      verified: false,              // item #9 lives here, populated later
+      verified: Boolean(match),
+      verifiedMeet: match ? {
+        name:  match.match.name,
+        state: match.match.state || null,
+        city:  match.match.city || null,
+      } : null,
       results,
     };
 
@@ -1637,22 +1652,36 @@ function Field({ label, required, dirty, focused, children }) {
 
 // ── Migrate v1 competition history → v2 (multi-event per meet) ─────────────
 // v1: { id, meetName, date, event, placing, time }
-// v2: { id, meetName, date, course, verified, results: [{event, placing, time}] }
+// v2: { id, meetName, date, course, verified, verifiedMeet, results: [...] }
+//
+// Every entry — v1 OR v2 — gets re-verified against the meets database on
+// load. This way the verified state stays in sync with the latest database
+// even for entries logged before a particular meet was added to the index.
 function migrateCompetitionHistory(history) {
   if (!Array.isArray(history)) return [];
   return history.map((entry) => {
-    if (Array.isArray(entry?.results)) return entry;  // already v2
-    return {
+    // Normalise to v2 shape first
+    const v2 = Array.isArray(entry?.results) ? entry : {
       id:       entry.id || (Date.now() + Math.random()).toString(),
       meetName: entry.meetName || '',
       date:     entry.date || '',
-      course:   entry.course || 'LCM',   // legacy entries default to long course
-      verified: false,
+      course:   entry.course || 'LCM',
       results:  entry.event ? [{
         event:   entry.event,
         time:    entry.time || '',
         placing: entry.placing || '',
       }] : [],
+    };
+    // Re-run verification against the current meets DB
+    const match = findMeetMatch(v2.meetName, v2.date);
+    return {
+      ...v2,
+      verified:     Boolean(match),
+      verifiedMeet: match ? {
+        name:  match.match.name,
+        state: match.match.state || null,
+        city:  match.match.city || null,
+      } : null,
     };
   });
 }
